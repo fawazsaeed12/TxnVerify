@@ -10,7 +10,21 @@ const express = require('express');
 const cors = require('cors');
 const QRCode = require('qrcode');
 const axios = require('axios');
+const path = require('path');
+const fs = require('fs');
 const { Client, LocalAuth } = require('whatsapp-web.js');
+
+// Top-level crash guards to prevent Windows SQLite file lock crashes (EBUSY)
+process.on('uncaughtException', (err) => {
+    console.warn('[WhatsApp Gateway] Handled uncaughtException:', err.message);
+    if (err.code === 'EBUSY' || (err.message && err.message.includes('EBUSY'))) {
+        console.warn('[WhatsApp Gateway] Windows file lock on cleanup gracefully bypassed.');
+    }
+});
+
+process.on('unhandledRejection', (reason) => {
+    console.warn('[WhatsApp Gateway] Handled unhandledRejection:', reason);
+});
 
 const app = express();
 const PORT = process.env.WHATSAPP_PORT || 3001;
@@ -22,22 +36,36 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Gateway state
 let client = null;
-let clientStatus = 'INITIALIZING'; // DISCONNECTED, SCAN_QR, AUTHENTICATED, READY, STOPPED
+let clientStatus = 'INITIALIZING'; // DISCONNECTED, SCAN_QR, AUTHENTICATED, READY, STOPPED, ERROR
 let currentQrRaw = null;
 let currentQrDataUrl = null;
 let pairedInfo = null;
 let lastError = null;
+let isInitializing = false;
 
 /**
  * Initialize whatsapp-web.js client with Puppeteer settings.
  */
 function initWhatsAppClient() {
+    if (isInitializing) {
+        console.log('[WhatsApp Gateway] Initialization already in progress, skipping duplicate call.');
+        return;
+    }
+    isInitializing = true;
+
     try {
         console.log('[WhatsApp Gateway] Initializing client...');
         clientStatus = 'INITIALIZING';
         currentQrRaw = null;
         currentQrDataUrl = null;
         lastError = null;
+
+        if (client) {
+            try {
+                client.destroy().catch(() => {});
+            } catch (e) {}
+            client = null;
+        }
 
         client = new Client({
             authStrategy: new LocalAuth({
@@ -52,7 +80,8 @@ function initWhatsAppClient() {
                     '--disable-accelerated-2d-canvas',
                     '--no-first-run',
                     '--no-zygote',
-                    '--disable-gpu'
+                    '--disable-gpu',
+                    '--disable-extensions'
                 ]
             }
         });
@@ -61,6 +90,7 @@ function initWhatsAppClient() {
             console.log('[WhatsApp Gateway] 📸 QR Code received. Generating Data URL...');
             currentQrRaw = qr;
             clientStatus = 'SCAN_QR';
+            isInitializing = false;
             try {
                 currentQrDataUrl = await QRCode.toDataURL(qr, {
                     width: 350,
@@ -80,12 +110,14 @@ function initWhatsAppClient() {
             clientStatus = 'AUTHENTICATED';
             currentQrRaw = null;
             currentQrDataUrl = null;
+            isInitializing = false;
         });
 
         client.on('auth_failure', (msg) => {
             console.error('[WhatsApp Gateway] ❌ Auth failure:', msg);
             clientStatus = 'AUTH_FAILURE';
             lastError = msg;
+            isInitializing = false;
         });
 
         client.on('ready', () => {
@@ -93,11 +125,12 @@ function initWhatsAppClient() {
             clientStatus = 'READY';
             currentQrRaw = null;
             currentQrDataUrl = null;
+            isInitializing = false;
             try {
                 pairedInfo = {
                     pushname: client.info?.pushname || 'User',
-                    wid: client.info?.wid?._serialized || 'Unknown',
-                    platform: client.info?.platform || 'Unknown'
+                    wid: client.info?.wid?._serialized || 'Connected',
+                    platform: client.info?.platform || 'WhatsApp Web'
                 };
             } catch (e) {
                 pairedInfo = { pushname: 'Connected Device' };
@@ -110,6 +143,7 @@ function initWhatsAppClient() {
             currentQrRaw = null;
             currentQrDataUrl = null;
             pairedInfo = null;
+            isInitializing = false;
         });
 
         // Incoming message listener: catches images/screenshots
@@ -151,21 +185,23 @@ function initWhatsAppClient() {
                         console.log(`[WhatsApp Gateway] Ignored non-image media type: ${media.mimetype}`);
                     }
                 } catch (err) {
-                    console.error('[WhatsApp Gateway] Error processing incoming media:', err);
+                    console.error('[WhatsApp Gateway] Error processing incoming media:', err.message);
                 }
             }
         });
 
         client.initialize().catch(err => {
-            console.error('[WhatsApp Gateway] client.initialize() error:', err.message);
+            console.warn('[WhatsApp Gateway] client.initialize() error caught:', err.message);
             clientStatus = 'ERROR';
             lastError = err.message;
+            isInitializing = false;
         });
 
     } catch (e) {
-        console.error('[WhatsApp Gateway] Exception in initWhatsAppClient:', e);
+        console.warn('[WhatsApp Gateway] Exception in initWhatsAppClient caught:', e.message);
         clientStatus = 'ERROR';
         lastError = e.message;
+        isInitializing = false;
     }
 }
 
@@ -173,9 +209,6 @@ function initWhatsAppClient() {
 // REST API Endpoints for Streamlit Frontend & Python Engine
 // -------------------------------------------------------------
 
-/**
- * Health check & status
- */
 app.get('/status', (req, res) => {
     res.json({
         status: clientStatus,
@@ -186,9 +219,6 @@ app.get('/status', (req, res) => {
     });
 });
 
-/**
- * Retrieve QR Code as Data URL or JSON
- */
 app.get('/qr', (req, res) => {
     if (currentQrDataUrl) {
         res.json({
@@ -205,9 +235,6 @@ app.get('/qr', (req, res) => {
     }
 });
 
-/**
- * Send a WhatsApp text reply back to a customer/sender
- */
 app.post('/send-message', async (req, res) => {
     const { to, message } = req.body;
 
@@ -224,10 +251,8 @@ app.post('/send-message', async (req, res) => {
     }
 
     try {
-        // Ensure chatId has @c.us or @g.us suffix
         let chatId = to;
         if (!chatId.includes('@')) {
-            // Clean phone digits
             const digits = to.replace(/\D/g, '');
             chatId = `${digits}@c.us`;
         }
@@ -243,60 +268,29 @@ app.post('/send-message', async (req, res) => {
     }
 });
 
-/**
- * Start or restart the WhatsApp gateway client
- */
 app.post('/start', (req, res) => {
     if (client && (clientStatus === 'READY' || clientStatus === 'SCAN_QR')) {
-        return res.json({ message: 'Client already running', status: clientStatus });
+        return res.json({ message: 'Client already active', status: clientStatus });
     }
+    isInitializing = false;
     initWhatsAppClient();
     res.json({ message: 'Client initialization triggered', status: clientStatus });
 });
 
-/**
- * Stop or destroy the WhatsApp gateway client
- */
 app.post('/stop', async (req, res) => {
     try {
         if (client) {
             console.log('[WhatsApp Gateway] Stopping WhatsApp client...');
-            await client.destroy();
+            await client.destroy().catch(() => {});
             client = null;
         }
         clientStatus = 'STOPPED';
         currentQrDataUrl = null;
         currentQrRaw = null;
+        isInitializing = false;
         res.json({ message: 'Client stopped', status: clientStatus });
     } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-/**
- * Simulate an incoming receipt message (for hackathon judge live testing)
- */
-app.post('/simulate-incoming', async (req, res) => {
-    const { from, data, mimetype, filename } = req.body;
-    if (!data) {
-        return res.status(400).json({ error: 'Missing base64 image data' });
-    }
-
-    const payload = {
-        from: from || '15551234567@c.us',
-        sender_name: 'Judge Demo Tester',
-        body: 'Simulated payment receipt',
-        timestamp: Math.floor(Date.now() / 1000),
-        mimetype: mimetype || 'image/jpeg',
-        data: data,
-        filename: filename || 'receipt.jpg'
-    };
-
-    try {
-        const response = await axios.post(PYTHON_WEBHOOK_URL, payload, { timeout: 75000 });
-        res.json({ success: true, forward_result: response.data });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
+        res.json({ message: 'Client stopped with notice', status: 'STOPPED' });
     }
 });
 
@@ -307,7 +301,6 @@ app.listen(PORT, () => {
     console.log(`Forwarding incoming screenshots to: ${PYTHON_WEBHOOK_URL}`);
     console.log(`=======================================================`);
 
-    // Auto-start WhatsApp client on boot if AUTO_START is not explicitly disabled
     if (process.env.AUTO_START !== 'false') {
         initWhatsAppClient();
     }

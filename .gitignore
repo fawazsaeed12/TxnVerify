@@ -1,3 +1,9 @@
+# IDE & AI tooling metadata
+.agents/
+.claude/
+.idea/
+.vscode/
+
 # Node & WhatsApp Web JS Cache
 node_modules/
 .wwebjs_auth/
