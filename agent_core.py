@@ -414,7 +414,15 @@ def process_payment_image(
 
     is_transaction = ocr_result.get("is_transaction", False)
     txn_id = ocr_result.get("transaction_id")
-    amount = ocr_result.get("amount")
+    amount = ocr_result.get("amount") or ocr_result.get("amount_value")
+    if amount and not any(s in str(amount) for s in ["Rs", "PKR", "$", "₹", "€"]):
+        curr = ocr_result.get("currency") or "Rs."
+        amount = f"{curr} {amount}"
+
+    # If key payment indicators are visible, mark as transaction
+    if not is_transaction and (amount or ocr_result.get("account_last4") or ocr_result.get("destination_bank") or txn_id):
+        is_transaction = True
+
     payment_app = ocr_result.get("payment_app") or ocr_result.get("payment_channel")
     destination_bank = ocr_result.get("destination_bank")
     account_last4 = ocr_result.get("account_last4")
@@ -422,7 +430,7 @@ def process_payment_image(
 
     if not is_transaction or not amount:
         reply_text = format_whatsapp_reply(is_transaction=False, is_verified=False)
-        database.log_event("OCR_FAILED", "REJECTED", "No transaction details detected", sender=sender_phone)
+        database.log_event("OCR_FAILED", "REJECTED", f"No transaction details detected (is_txn={is_transaction}, amt={amount})", sender=sender_phone)
 
         if sender_phone:
             send_whatsapp_message(sender_phone, reply_text)

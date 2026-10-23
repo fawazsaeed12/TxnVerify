@@ -151,29 +151,41 @@ function initWhatsAppClient() {
         client.on('message', async (msg) => {
             console.log(`[WhatsApp Gateway] 📩 Received message from: ${msg.from} | Type: ${msg.type} | HasMedia: ${msg.hasMedia}`);
 
+            // Skip group messages by default to prevent non-payment group media from triggering OCR
+            if (msg.from && msg.from.endsWith('@g.us')) {
+                console.log(`[WhatsApp Gateway] Ignored media from group: ${msg.from}`);
+                return;
+            }
+
             if (msg.hasMedia) {
                 try {
-                    console.log(`[WhatsApp Gateway] 📥 Fetching media from ${msg.from}...`);
+                    console.log(`[WhatsApp Gateway] 📥 Fetching high-resolution media from ${msg.from}...`);
                     
+                    // Trigger chat active status to wake up WhatsApp Web media downloader
+                    try {
+                        const chat = await msg.getChat();
+                        if (chat) await chat.sendSeen().catch(() => {});
+                    } catch (_) {}
+
                     let media = null;
                     // Progressive retry loop with backoff (gives WhatsApp Web time to buffer/decrypt)
-                    for (let attempt = 1; attempt <= 4; attempt++) {
+                    for (let attempt = 1; attempt <= 5; attempt++) {
                         try {
-                            const delayMs = attempt === 1 ? 1200 : attempt * 1500;
+                            const delayMs = attempt === 1 ? 800 : attempt * 1200;
                             await new Promise(res => setTimeout(res, delayMs));
                             media = await msg.downloadMedia();
-                            if (media && media.data) {
-                                console.log(`[WhatsApp Gateway] ✅ Media downloaded successfully on attempt ${attempt}`);
+                            if (media && media.data && media.data.length > 5000) {
+                                console.log(`[WhatsApp Gateway] ✅ High-resolution media downloaded successfully on attempt ${attempt} (${Math.round(media.data.length / 1024)} KB)`);
                                 break;
                             }
                         } catch (downloadErr) {
-                            console.warn(`[WhatsApp Gateway] Attempt ${attempt}/4 download notice: ${downloadErr.message || downloadErr}`);
+                            console.warn(`[WhatsApp Gateway] Attempt ${attempt}/5 download notice: ${downloadErr.message || downloadErr}`);
                         }
                     }
 
-                    // Fallback to thumbnail body data if full media download was blocked by WhatsApp Web
-                    if (!media && msg._data && msg._data.body && typeof msg._data.body === 'string' && msg._data.body.length > 50) {
-                        console.log('[WhatsApp Gateway] ℹ️ Using embedded message thumbnail data as fallback');
+                    // Only use thumbnail preview as last resort if high-res failed
+                    if ((!media || !media.data || media.data.length <= 5000) && msg._data && msg._data.body && typeof msg._data.body === 'string' && msg._data.body.length > 50) {
+                        console.log('[WhatsApp Gateway] ℹ️ Using embedded message thumbnail data as last resort fallback');
                         media = {
                             data: msg._data.body,
                             mimetype: msg._data.mimetype || 'image/jpeg',
