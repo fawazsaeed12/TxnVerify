@@ -7,8 +7,11 @@ and transactional email polling.
 import os
 import json
 import logging
+import base64
+import html
+import re
 from pathlib import Path
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 import requests
 
 from google.oauth2.credentials import Credentials
@@ -248,65 +251,152 @@ def get_user_email() -> Optional[str]:
         return "Connected Google Account"
 
 
+def extract_body_from_payload(payload: Dict[str, Any]) -> str:
+    """Recursively extract plain text or decoded HTML from Gmail message payload."""
+    text_parts = []
+
+    def _walk_parts(p):
+        mime_type = p.get("mimeType", "")
+        body_data = p.get("body", {}).get("data")
+
+        if mime_type == "text/plain" and body_data:
+            try:
+                decoded = base64.urlsafe_b64decode(body_data).decode("utf-8", errors="ignore")
+                text_parts.append(decoded)
+                return
+            except Exception:
+                pass
+
+        if mime_type == "text/html" and body_data:
+            try:
+                decoded = base64.urlsafe_b64decode(body_data).decode("utf-8", errors="ignore")
+                clean = re.sub(r"<[^>]+>", " ", decoded)
+                clean = html.unescape(clean)
+                clean = re.sub(r"\s+", " ", clean).strip()
+                text_parts.append(clean)
+            except Exception:
+                pass
+
+        for subpart in p.get("parts", []):
+            _walk_parts(subpart)
+
+    _walk_parts(payload)
+    return "\n".join(text_parts).strip()
+
+
+def query_candidate_emails(extracted_info: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Search both live Gmail and local bank store for candidate transaction emails.
+    Uses multi-faceted query strategy (amount, account last4, destination bank, channel, transaction ID).
+    """
+    candidates = []
+    seen_ids = set()
+
+    # Extract search keywords from OCR metadata
+    amount_str = str(extracted_info.get("amount") or "")
+    amount_val = str(extracted_info.get("amount_value") or "")
+    if not amount_val and amount_str:
+        amt_match = re.search(r"(\d+(?:\.\d{1,2})?)", amount_str)
+        if amt_match:
+            amount_val = amt_match.group(1)
+
+    last4 = str(extracted_info.get("account_last4") or "").strip()
+    bank = str(extracted_info.get("destination_bank") or "").strip()
+    channel = str(extracted_info.get("payment_channel") or "").strip()
+    txn_id = str(extracted_info.get("transaction_id") or "").strip()
+
+    # 1. Search Live Gmail API if credentials exist
+    creds = get_stored_credentials()
+    if creds and creds.valid:
+        try:
+            service = build("gmail", "v1", credentials=creds)
+
+            # Build query variants to find the bank notification
+            queries = []
+            if txn_id and len(txn_id) <= 32:
+                queries.append(f'"{txn_id}"')
+
+            if amount_val:
+                queries.append(f'"{amount_val}" (credit OR credited OR received OR transfer OR deposit OR RAAST) newer_than:3d')
+                if last4:
+                    queries.append(f'"{amount_val}" "{last4}" newer_than:3d')
+
+            if bank or channel:
+                queries.append(f'({bank or channel} OR RAAST OR "Fund Transfer") newer_than:2d')
+
+            queries.append('(credit OR credited OR "Fund Transfer" OR "RAAST Fund Transfer") newer_than:2d')
+
+            for q in queries:
+                try:
+                    resp = service.users().messages().list(userId="me", q=q, maxResults=5).execute()
+                    msg_items = resp.get("messages", [])
+                    for item in msg_items:
+                        mid = item["id"]
+                        if mid in seen_ids:
+                            continue
+                        seen_ids.add(mid)
+
+                        msg = service.users().messages().get(userId="me", id=mid, format="full").execute()
+                        payload = msg.get("payload", {})
+                        headers = {h["name"]: h["value"] for h in payload.get("headers", [])}
+                        body = extract_body_from_payload(payload) or msg.get("snippet", "")
+
+                        candidates.append({
+                            "id": mid,
+                            "threadId": msg.get("threadId"),
+                            "snippet": msg.get("snippet", ""),
+                            "body": body,
+                            "subject": headers.get("Subject", "Payment Notification"),
+                            "sender": headers.get("From", "Bank Alert"),
+                            "date": headers.get("Date", ""),
+                            "source": "Live Gmail API"
+                        })
+                        if len(candidates) >= 6:
+                            break
+                except HttpError as he:
+                    if "accessNotConfigured" in str(he) or "disabled" in str(he):
+                        logger.warning("Gmail API is disabled in Google Cloud Console. Enable Gmail API to poll live inbox.")
+                        database.set_config("last_oauth_error", "Gmail API is not yet enabled in your Google Cloud Project. Please enable it in Google Cloud Console.")
+                        break
+                    else:
+                        logger.warning(f"Gmail query error for '{q}': {he}")
+                if len(candidates) >= 6:
+                    break
+
+        except Exception as e:
+            logger.warning(f"Error querying live Gmail: {e}")
+
+    # 2. Search Database Bank Store
+    db_terms = [t for t in [txn_id, amount_val, last4, bank, channel] if t]
+    if not db_terms and amount_str:
+        db_terms.append(amount_str)
+
+    local_matches = database.search_bank_emails(db_terms)
+    for row in local_matches:
+        mid = f"db-{row['id']}"
+        if mid not in seen_ids:
+            seen_ids.add(mid)
+            candidates.append({
+                "id": mid,
+                "threadId": f"thread-{row['id']}",
+                "snippet": row.get("body", "")[:200],
+                "body": row.get("body", ""),
+                "subject": row.get("subject", ""),
+                "sender": row.get("sender", ""),
+                "date": row.get("received_at", ""),
+                "source": "Bank Notification Mail Store"
+            })
+
+    return candidates
+
+
 def query_gmail_for_transaction(transaction_id: str) -> Optional[Dict[str, Any]]:
     """
     Search Gmail messages for transaction_id.
     Returns matched message dictionary with subject, snippet, id, or None.
     """
-    creds = get_stored_credentials()
-    if not creds or not creds.valid:
-        # No live credentials — fall back to the local mock-email table
-        # (populated by generate_sample_receipt.py for offline testing)
-        matches = database.search_mock_emails(transaction_id)
-        if matches:
-            top = matches[0]
-            return {
-                "id": f"mock-{top['id']}",
-                "threadId": f"mock-thread-{top['id']}",
-                "snippet": top["body"][:200],
-                "subject": top["subject"],
-                "sender": top["sender"],
-                "source": "Local test data (no Gmail connected)"
-            }
-        return None
-
-    try:
-        service = build("gmail", "v1", credentials=creds)
-        # Search query matching transaction ID in query string
-        query = f'"{transaction_id}"'
-        results = service.users().messages().list(userId="me", q=query, maxResults=5).execute()
-        messages = results.get("messages", [])
-
-        if not messages:
-            # Fallback search without quotes
-            results = service.users().messages().list(userId="me", q=transaction_id, maxResults=5).execute()
-            messages = results.get("messages", [])
-
-        if not messages:
-            return None
-
-        # Fetch the first matched message details
-        msg_id = messages[0]["id"]
-        msg = service.users().messages().get(userId="me", id=msg_id, format="metadata",
-                                             metadataHeaders=["Subject", "From", "Date"]).execute()
-
-        headers = {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
-        return {
-            "id": msg_id,
-            "threadId": msg.get("threadId"),
-            "snippet": msg.get("snippet", ""),
-            "subject": headers.get("Subject", "Payment Notification"),
-            "sender": headers.get("From", "Bank Notification"),
-            "date": headers.get("Date", ""),
-            "source": "Live Gmail API"
-        }
-
-    except HttpError as error:
-        logger.error(f"Gmail API HTTP error: {error}")
-        return None
-    except Exception as e:
-        logger.error(f"Unexpected error searching Gmail: {e}")
-        return None
+    candidates = query_candidate_emails({"transaction_id": transaction_id})
+    return candidates[0] if candidates else None
 
 
 def sign_out() -> None:

@@ -48,6 +48,10 @@ def init_db() -> None:
                 payment_app TEXT,
                 ocr_confidence REAL,
                 gmail_verified INTEGER DEFAULT 0,
+                gemma_verified INTEGER DEFAULT 0,
+                bank_reference TEXT,
+                reconciliation_summary TEXT,
+                matched_fields TEXT,
                 gmail_message_id TEXT,
                 gmail_subject TEXT,
                 gmail_snippet TEXT,
@@ -56,6 +60,20 @@ def init_db() -> None:
                 raw_ocr_json TEXT
             )
         """)
+
+        # Migration: add newer columns if table was created earlier
+        existing_cols = [c[1] for c in cursor.execute("PRAGMA table_info(transactions)").fetchall()]
+        for col_name, col_def in [
+            ("gemma_verified", "INTEGER DEFAULT 0"),
+            ("bank_reference", "TEXT"),
+            ("reconciliation_summary", "TEXT"),
+            ("matched_fields", "TEXT")
+        ]:
+            if col_name not in existing_cols:
+                try:
+                    cursor.execute(f"ALTER TABLE transactions ADD COLUMN {col_name} {col_def}")
+                except Exception:
+                    pass
 
         # Mock / Sandbox emails table (allows judges to simulate bank confirmation emails)
         cursor.execute("""
@@ -128,21 +146,43 @@ def save_transaction(transaction_id: str, amount: Optional[str] = None,
         return cursor.lastrowid
 
 
-def mark_transaction_verified(transaction_id: str, gmail_message_id: str,
-                              gmail_subject: str, gmail_snippet: str) -> None:
-    """Mark transaction as successfully verified via Gmail."""
+def mark_transaction_verified(
+    transaction_id: str,
+    gmail_message_id: str = "",
+    gmail_subject: str = "",
+    gmail_snippet: str = "",
+    bank_reference: Optional[str] = None,
+    reconciliation_summary: Optional[str] = None,
+    matched_fields: Optional[str] = None,
+    gemma_verified: int = 1
+) -> None:
+    """Mark transaction as successfully verified via Gemma 4 and Gmail."""
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     with get_db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
             UPDATE transactions
             SET gmail_verified = 1,
+                gemma_verified = ?,
+                bank_reference = ?,
+                reconciliation_summary = ?,
+                matched_fields = ?,
                 gmail_message_id = ?,
                 gmail_subject = ?,
                 gmail_snippet = ?,
                 verified_at = ?
             WHERE transaction_id = ?
-        """, (gmail_message_id, gmail_subject, gmail_snippet, now, transaction_id))
+        """, (
+            gemma_verified,
+            bank_reference,
+            reconciliation_summary,
+            matched_fields,
+            gmail_message_id,
+            gmail_subject,
+            gmail_snippet,
+            now,
+            transaction_id
+        ))
         conn.commit()
 
 
@@ -208,6 +248,37 @@ def search_mock_emails(transaction_id: str) -> List[Dict[str, Any]]:
             ORDER BY id DESC
         """, (f"%{transaction_id}%", f"%{transaction_id}%", f"%{transaction_id}%"))
         return [dict(row) for row in cursor.fetchall()]
+
+
+def search_bank_emails(terms: List[str]) -> List[Dict[str, Any]]:
+    """Search mock/stored bank emails using multiple search keywords."""
+    valid_terms = [t.strip() for t in terms if t and len(str(t).strip()) >= 2]
+    if not valid_terms:
+        return search_mock_emails("")
+
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        conditions = []
+        params = []
+        for t in valid_terms:
+            t_clean = f"%{t}%"
+            conditions.append("(transaction_id LIKE ? OR body LIKE ? OR subject LIKE ?)")
+            params.extend([t_clean, t_clean, t_clean])
+
+        query = f"""
+            SELECT * FROM mock_emails
+            WHERE {" OR ".join(conditions)}
+            ORDER BY id DESC
+        """
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+        seen = set()
+        deduped = []
+        for r in rows:
+            if r["id"] not in seen:
+                seen.add(r["id"])
+                deduped.append(dict(r))
+        return deduped
 
 
 # Auto-initialize database on import

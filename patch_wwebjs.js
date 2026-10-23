@@ -38,6 +38,15 @@ if (fs.existsSync(messageFile)) {
         modified = true;
     }
 
+    // 4. Wrap pupPage.evaluate in outer catch to absorb browser evaluation rejection 'r'
+    if (content.includes('}, this.id._serialized);') && !content.includes('}, this.id._serialized).catch(() => undefined);')) {
+        content = content.replace(
+            '}, this.id._serialized);',
+            '}, this.id._serialized).catch(() => undefined);'
+        );
+        modified = true;
+    }
+
     if (modified) {
         fs.writeFileSync(messageFile, content, 'utf8');
         console.log('[Patch] Applied comprehensive media decryption fixes to whatsapp-web.js Message.js');

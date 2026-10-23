@@ -721,6 +721,13 @@ with tab_setup:
         </p>
         """, unsafe_allow_html=True)
 
+        last_oauth_err = database.get_config("last_oauth_error")
+        if last_oauth_err:
+            if "Gmail API" in str(last_oauth_err):
+                st.warning(f"⚠️ **Google Cloud Notice:** {last_oauth_err}\n\n👉 [Click here to Enable Gmail API in your Google Cloud Project](https://console.developers.google.com/apis/api/gmail.googleapis.com/overview)")
+            else:
+                st.info(f"Notice: {last_oauth_err}")
+
         try:
             auth_url, _ = google_auth.get_google_auth_url(redirect_uri="http://localhost:8501")
             st.link_button("🌐 Sign in with Google", auth_url, type="primary")
@@ -846,11 +853,19 @@ with tab_audit:
     raw_txns = database.get_transactions(limit=100)
     if raw_txns:
         df_t = pd.DataFrame(raw_txns)
-        cols = ["transaction_id", "amount", "sender_phone", "payment_app", "gmail_verified", "ocr_confidence", "created_at"]
+        cols = ["transaction_id", "bank_reference", "amount", "payment_app", "gemma_verified", "reconciliation_summary", "sender_phone", "created_at"]
         clean_df = df_t[[c for c in cols if c in df_t.columns]].copy()
-        clean_df["gmail_verified"] = clean_df["gmail_verified"].apply(lambda v: "✅ Confirmed" if v == 1 else "❌ Unverified")
-        if "ocr_confidence" in clean_df.columns:
-            clean_df["ocr_confidence"] = clean_df["ocr_confidence"].apply(lambda c: f"{round(float(c or 0.95)*100)}%")
+        clean_df["gemma_verified"] = clean_df["gemma_verified"].apply(lambda v: "✅ Confirmed (Gemma 4)" if v == 1 else "❌ Unverified")
+        clean_df.rename(columns={
+            "transaction_id": "Receipt Ref / ID",
+            "bank_reference": "Official Bank Ref",
+            "amount": "Amount",
+            "payment_app": "App / Channel",
+            "gemma_verified": "Status",
+            "reconciliation_summary": "Gemma 4 Audit Note",
+            "sender_phone": "WhatsApp Sender",
+            "created_at": "Timestamp"
+        }, inplace=True)
         st.dataframe(clean_df, use_container_width=True)
     else:
         st.markdown("""

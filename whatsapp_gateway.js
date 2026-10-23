@@ -156,18 +156,18 @@ function initWhatsAppClient() {
                     console.log(`[WhatsApp Gateway] 📥 Fetching media from ${msg.from}...`);
                     
                     let media = null;
-                    // Progressive retry loop with small backoff (gives WhatsApp Web time to buffer/decrypt)
-                    for (let attempt = 1; attempt <= 3; attempt++) {
+                    // Progressive retry loop with backoff (gives WhatsApp Web time to buffer/decrypt)
+                    for (let attempt = 1; attempt <= 4; attempt++) {
                         try {
-                            // Wait 800ms before first attempt, 1500ms on retries
-                            await new Promise(res => setTimeout(res, attempt === 1 ? 800 : 1500));
+                            const delayMs = attempt === 1 ? 1200 : attempt * 1500;
+                            await new Promise(res => setTimeout(res, delayMs));
                             media = await msg.downloadMedia();
                             if (media && media.data) {
                                 console.log(`[WhatsApp Gateway] ✅ Media downloaded successfully on attempt ${attempt}`);
                                 break;
                             }
                         } catch (downloadErr) {
-                            console.warn(`[WhatsApp Gateway] Attempt ${attempt}/3 download notice: ${downloadErr.message || downloadErr}`);
+                            console.warn(`[WhatsApp Gateway] Attempt ${attempt}/4 download notice: ${downloadErr.message || downloadErr}`);
                         }
                     }
 

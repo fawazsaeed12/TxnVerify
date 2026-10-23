@@ -22,6 +22,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(na
 
 # Default vision model: gemini-2.5-flash (Google's multimodal visual OCR engine)
 DEFAULT_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMMA_MODEL = os.getenv("GEMMA_MODEL", "gemma-4-26b-a4b-it")
 WHATSAPP_GATEWAY_URL = os.getenv("WHATSAPP_GATEWAY_URL", "http://localhost:3001")
 
 EXTRACTION_SYSTEM_PROMPT = """You are TxnVerify AI, an expert banking and payment verification OCR engine.
@@ -30,19 +31,25 @@ Extract the transaction details into clean JSON.
 
 You must return a valid JSON object with EXACTLY these keys:
 {
-  "is_transaction": boolean,       // true if this image is a payment receipt/transfer confirmation
-  "transaction_id": string or null, // alphanumeric transaction ref/ID (e.g. UTR, Ref #, Txn ID, Order ID)
-  "amount": string or null,         // currency symbol and amount (e.g. "$150.00", "₹500.00", "€45.50")
-  "payment_app": string or null,    // detected platform (e.g., "Zelle", "Venmo", "PayPal", "CashApp", "GPay", "Chase", "UPI")
-  "sender_name": string or null,    // sender or payer name if visible
-  "receiver_name": string or null,  // recipient or payee name if visible
-  "confidence": number              // float from 0.0 to 1.0 indicating confidence in extraction
+  "is_transaction": boolean,        // true if this image is a payment receipt/transfer confirmation
+  "transaction_id": string or null, // alphanumeric transaction ref/ID or hash (e.g. UTR, Ref #, Txn ID, Order ID)
+  "amount": string or null,          // currency symbol and amount (e.g. "Rs. 100", "$150.00", "PKR 100.00")
+  "amount_value": number or string,  // pure numeric amount value (e.g. 100 or 150.00)
+  "currency": string or null,        // e.g. "PKR", "Rs", "USD", "EUR"
+  "payment_app": string or null,     // detected platform (e.g., "NayaPay", "SadaPay", "Easypaisa", "JazzCash", "Zelle", "Venmo", "PayPal", "Chase")
+  "payment_channel": string or null, // transfer channel if shown (e.g. "Raast", "IMPS", "1Link", "IBFT", "ACH")
+  "destination_bank": string or null,// destination bank name (e.g. "Faysal Bank", "Meezan Bank", "Chase")
+  "account_last4": string or null,   // last 4 digits of destination account if visible (e.g. "3206")
+  "sender_name": string or null,     // sender or payer name if visible
+  "receiver_name": string or null,   // recipient or payee name if visible
+  "timestamp": string or null,       // date and time shown on receipt
+  "confidence": number               // float from 0.0 to 1.0 indicating confidence in extraction
 }
 
 Strict requirements:
 1. If the image is not a payment receipt or transaction screenshot, set "is_transaction": false and others to null.
-2. Be extremely precise with the "transaction_id". Remove surrounding labels like "Ref:" or "Txn ID:" and extract only the exact alphanumeric reference identifier.
-3. Output RAW JSON ONLY. Do not enclose in markdown ticks if possible, or output inside ```json ```.
+2. Be extremely precise. Extract all account suffixes, amounts, banks, and transaction references visible.
+3. Output RAW JSON ONLY. Do not enclose in markdown formatting if possible.
 """
 
 
@@ -123,36 +130,170 @@ def parse_ocr_json_response(raw_text: str) -> Dict[str, Any]:
 
     try:
         data = json.loads(cleaned)
-        # Ensure standard keys
         return {
             "is_transaction": bool(data.get("is_transaction", False)),
             "transaction_id": str(data.get("transaction_id")).strip() if data.get("transaction_id") else None,
             "amount": str(data.get("amount")).strip() if data.get("amount") else None,
+            "amount_value": data.get("amount_value"),
+            "currency": data.get("currency"),
             "payment_app": data.get("payment_app"),
+            "payment_channel": data.get("payment_channel"),
+            "destination_bank": data.get("destination_bank"),
+            "account_last4": str(data.get("account_last4")).strip() if data.get("account_last4") else None,
             "sender_name": data.get("sender_name"),
             "receiver_name": data.get("receiver_name"),
+            "timestamp": data.get("timestamp"),
             "confidence": float(data.get("confidence", 0.95) if data.get("confidence") is not None else 0.95),
             "raw_text": raw_text
         }
     except Exception as e:
         logger.warning(f"JSON parsing error: {e}. Raw text was: {raw_text[:200]}")
-        # Regex fallback for transaction_id and amount
         txn_match = re.search(r'"transaction_id":\s*"([^"]+)"', raw_text, re.IGNORECASE)
         amt_match = re.search(r'"amount":\s*"([^"]+)"', raw_text, re.IGNORECASE)
         is_txn_match = re.search(r'"is_transaction":\s*(true|false)', raw_text, re.IGNORECASE)
 
-        is_txn = is_txn_match.group(1).lower() == "true" if is_txn_match else bool(txn_match)
+        is_txn = is_txn_match.group(1).lower() == "true" if is_txn_match else bool(amt_match or txn_match)
 
         return {
             "is_transaction": is_txn,
             "transaction_id": txn_match.group(1) if txn_match else None,
             "amount": amt_match.group(1) if amt_match else None,
-            "payment_app": "Detected App",
+            "amount_value": None,
+            "currency": None,
+            "payment_app": "Payment App",
+            "payment_channel": None,
+            "destination_bank": None,
+            "account_last4": None,
             "sender_name": None,
             "receiver_name": None,
+            "timestamp": None,
             "confidence": 0.8 if is_txn else 0.0,
             "raw_text": raw_text
         }
+
+
+def reconcile_with_gemma4(
+    ocr_data: Dict[str, Any],
+    email_cand: Dict[str, Any],
+    api_key: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Invoke Gemma 4 (gemma-4-26b-a4b-it / gemma-4-31b-it) to perform deep semantic
+    reconciliation between the extracted payment receipt and bank confirmation email.
+    """
+    key = (api_key or get_gemini_api_key()).strip()
+    if not key:
+        raise ValueError("Missing Gemini API Key.")
+
+    from google import genai
+    client = genai.Client(api_key=key)
+
+    prompt = f"""You are TxnVerify AI's core fraud-detection and reconciliation engine powered by Gemma 4.
+Your task is to reconcile and verify a customer's payment screenshot against an official bank notification email.
+
+Customer Receipt Data (Extracted from image):
+{json.dumps(ocr_data, indent=2)}
+
+Bank Notification Email Content:
+Subject: {email_cand.get('subject', '')}
+From: {email_cand.get('sender', '')}
+Date: {email_cand.get('date', '')}
+Body:
+{email_cand.get('body', '')}
+
+Analyze and reconcile the two sources. Compare:
+1. Amount & Currency (e.g. 100 / Rs. 100 / PKR 100.00)
+2. Receiver / Destination Account & Name (e.g. 3206 / Faysal Bank / Muhammad Fawaz)
+3. Sender Account & Name (e.g. Muhammad Mubashar / NayaPay)
+4. Channel & Timestamp proximity (e.g. Raast, 23 Oct 2026, 08:30 PM)
+
+Return a valid JSON object ONLY with:
+{{
+  "is_verified": boolean,
+  "confidence": float (0.0 to 1.0),
+  "matched_fields": ["list", "of", "matching", "fields"],
+  "official_transaction_reference": "reference number from bank email",
+  "reconciliation_summary": "1-2 sentence explanation of why this payment is confirmed"
+}}
+Raw JSON only."""
+
+    models_to_try = ["gemma-4-26b-a4b-it", "gemma-4-31b-it", "gemini-2.5-flash"]
+    last_err = None
+    for m in models_to_try:
+        try:
+            logger.info(f"Running Gemma 4 reconciliation with model '{m}'...")
+            res = client.models.generate_content(model=m, contents=prompt)
+            txt = (res.text or "").strip()
+            if "```json" in txt:
+                txt = txt.split("```json")[1].split("```")[0].strip()
+            elif "```" in txt:
+                txt = txt.split("```")[1].split("```")[0].strip()
+            result = json.loads(txt)
+            logger.info(f"Gemma 4 reconciliation complete ({m}): verified={result.get('is_verified')}, ref={result.get('official_transaction_reference')}")
+            return result
+        except Exception as e:
+            logger.warning(f"Reconciliation attempt with '{m}' failed: {e}")
+            last_err = e
+
+    return {
+        "is_verified": False,
+        "confidence": 0.0,
+        "matched_fields": [],
+        "official_transaction_reference": None,
+        "reconciliation_summary": f"Gemma 4 reconciliation error: {last_err}"
+    }
+
+
+def poll_and_verify_with_gemma4(
+    ocr_result: Dict[str, Any],
+    timeout_seconds: int = 60,
+    poll_interval: int = 4,
+    api_key: Optional[str] = None,
+    progress_callback: Optional[Callable[[int, int, str], None]] = None
+) -> Tuple[bool, Optional[Dict[str, Any]], Optional[Dict[str, Any]], float]:
+    """
+    Polls Gmail inbox and local bank store for up to timeout_seconds.
+    When candidate emails are retrieved, invokes Gemma 4 to reconcile the payment.
+    Returns (is_verified, matched_email, gemma_reconcile_result, elapsed_time_seconds).
+    """
+    start_time = time.time()
+    attempt = 0
+    txn_id = ocr_result.get("transaction_id") or "Receipt"
+    amount = ocr_result.get("amount") or ""
+
+    logger.info(f"Starting Gemma 4 verification polling for: '{txn_id}' (Amount: {amount})")
+
+    while (time.time() - start_time) < timeout_seconds:
+        attempt += 1
+        elapsed = round(time.time() - start_time, 1)
+
+        status_msg = f"Scanning Gmail for bank credit confirmation (attempt #{attempt}, {elapsed}s / {timeout_seconds}s)..."
+        logger.info(status_msg)
+        if progress_callback:
+            progress_callback(attempt, int(elapsed), status_msg)
+
+        # Search candidates from Gmail and local bank store
+        candidates = google_auth.query_candidate_emails(ocr_result)
+
+        if candidates:
+            if progress_callback:
+                progress_callback(attempt, int(elapsed), f"Found {len(candidates)} candidate notification(s). Reconciling with Gemma 4...")
+
+            for cand in candidates:
+                logger.info(f"Reconciling candidate: {cand.get('subject')} ({cand.get('source')})")
+                reconcile = reconcile_with_gemma4(ocr_data=ocr_result, email_cand=cand, api_key=api_key)
+                if reconcile.get("is_verified"):
+                    total_elapsed = round(time.time() - start_time, 2)
+                    logger.info(f"✅ Gemma 4 Verified! Bank Ref: {reconcile.get('official_transaction_reference')}")
+                    if progress_callback:
+                        progress_callback(attempt, int(total_elapsed), f"✅ Verified via Gemma 4 ({total_elapsed}s)! Ref: {reconcile.get('official_transaction_reference')}")
+                    return True, cand, reconcile, total_elapsed
+
+        time.sleep(poll_interval)
+
+    total_elapsed = round(time.time() - start_time, 2)
+    logger.warning(f"❌ Polling timeout reached ({total_elapsed}s). No matching bank confirmation verified.")
+    return False, None, None, total_elapsed
 
 
 def poll_gmail_for_transaction(
@@ -161,36 +302,14 @@ def poll_gmail_for_transaction(
     poll_interval: int = 5,
     progress_callback: Optional[Callable[[int, int, str], None]] = None
 ) -> Tuple[bool, Optional[Dict[str, Any]], float]:
-    """
-    Polls Gmail inbox for up to timeout_seconds (default 60s) looking for transaction_id.
-    Returns (is_verified, email_details, elapsed_time_seconds).
-    """
-    start_time = time.time()
-    attempt = 0
-    logger.info(f"Starting 60s Gmail polling loop for Transaction ID: '{transaction_id}'")
-
-    while (time.time() - start_time) < timeout_seconds:
-        attempt += 1
-        elapsed = round(time.time() - start_time, 1)
-
-        status_msg = f"Polling Gmail (attempt #{attempt}, {elapsed}s / {timeout_seconds}s) for '{transaction_id}'..."
-        logger.info(status_msg)
-        if progress_callback:
-            progress_callback(attempt, int(elapsed), status_msg)
-
-        match = google_auth.query_gmail_for_transaction(transaction_id)
-        if match:
-            total_elapsed = round(time.time() - start_time, 2)
-            logger.info(f"✅ Match found in Gmail after {total_elapsed}s! Subject: {match.get('subject')}")
-            if progress_callback:
-                progress_callback(attempt, int(total_elapsed), f"Match confirmed in Gmail ({total_elapsed}s)")
-            return True, match, total_elapsed
-
-        time.sleep(poll_interval)
-
-    total_elapsed = round(time.time() - start_time, 2)
-    logger.warning(f"❌ Gmail polling timeout reached ({total_elapsed}s). No match found for '{transaction_id}'.")
-    return False, None, total_elapsed
+    """Backwards compatibility wrapper around poll_and_verify_with_gemma4."""
+    verified, cand, reconcile, elapsed = poll_and_verify_with_gemma4(
+        ocr_result={"transaction_id": transaction_id},
+        timeout_seconds=timeout_seconds,
+        poll_interval=poll_interval,
+        progress_callback=progress_callback
+    )
+    return verified, cand, elapsed
 
 
 def format_whatsapp_reply(
@@ -199,6 +318,10 @@ def format_whatsapp_reply(
     transaction_id: Optional[str] = None,
     amount: Optional[str] = None,
     payment_app: Optional[str] = None,
+    destination_bank: Optional[str] = None,
+    account_last4: Optional[str] = None,
+    official_ref: Optional[str] = None,
+    reconciliation_summary: Optional[str] = None,
     gmail_match: Optional[Dict[str, Any]] = None,
     elapsed_seconds: float = 0.0
 ) -> str:
@@ -206,26 +329,37 @@ def format_whatsapp_reply(
     if not is_transaction:
         return (
             "⚠️ *TxnVerify AI Notification*\n\n"
-            "We received your image, but could not detect a valid payment receipt or transaction reference.\n\n"
-            "Please send a clear screenshot showing the *Transaction ID* and *Amount*."
+            "We received your image, but could not detect a valid payment receipt or transfer confirmation.\n\n"
+            "Please send a clear screenshot showing the *Amount* and *Transfer Details*."
         )
 
     if is_verified:
-        subject = gmail_match.get("subject", "Official Payment Confirmation") if gmail_match else "Bank Alert"
+        subject = gmail_match.get("subject", "Official Payment Confirmation") if gmail_match else "Bank Notification"
         sender = gmail_match.get("sender", "Bank") if gmail_match else "Bank Notification"
+        
+        bank_line = f"• *Destination:* {destination_bank}" if destination_bank else ""
+        if account_last4:
+            bank_line = (bank_line + f" (Account ending in {account_last4})") if bank_line else f"• *Account:* ending in {account_last4}"
+
+        ref_id = official_ref or transaction_id or "Confirmed"
+        audit_note = f"• *Audit Summary:* {reconciliation_summary}\n" if reconciliation_summary else ""
+
         return (
-            "✅ *Payment Confirmed!*\n\n"
-            f"• *Transaction ID:* `{transaction_id}`\n"
-            f"• *Amount:* {amount or 'N/A'}\n"
-            f"• *Method:* {payment_app or 'Direct Transfer'}\n"
+            "✅ *Payment Confirmed via Gemma 4!*\n\n"
+            f"• *Amount Credited:* {amount or 'Confirmed'}\n"
+            f"• *Official Bank Ref:* `{ref_id}`\n"
+            f"• *Method/App:* {payment_app or 'Direct Transfer'}\n"
+            f"{bank_line}\n"
             f"• *Verified via:* {sender} ({subject})\n"
-            f"• *Response Time:* {elapsed_seconds}s\n\n"
-            "Thank you! Your transaction has been automatically authenticated and recorded."
+            f"{audit_note}"
+            f"• *Verification Time:* {elapsed_seconds}s\n\n"
+            "✨ Your transaction has been reconciled and authenticated against official bank records."
         )
     else:
+        ref_display = f"`{transaction_id}`" if transaction_id else "Unresolved"
         return (
             "❌ *Payment Unverified*\n\n"
-            f"• *Transaction ID:* `{transaction_id}`\n"
+            f"• *Transaction ID:* {ref_display}\n"
             f"• *Amount:* {amount or 'N/A'}\n"
             f"• *Status:* No matching confirmation email received in Gmail after 60 seconds of monitoring.\n\n"
             "If your bank or wallet delays confirmation emails, please try again in a few moments or contact support."
@@ -258,18 +392,18 @@ def process_payment_image(
 ) -> Dict[str, Any]:
     """
     End-to-end payment processing pipeline:
-    1. Gemma 4 Visual OCR extraction
-    2. Save transaction to DB
-    3. 60-second Gmail inbox polling
-    4. Database update
+    1. Gemini 2.5 Flash Multimodal Visual OCR extraction
+    2. Save initial transaction to DB
+    3. 60-second Gmail & Bank notification polling + Gemma 4 Reconciliation
+    4. Database update with verified bank reference
     5. WhatsApp automated reply
     """
     start_time = time.time()
 
-    # Step 1: Gemma 4 Visual OCR
-    database.log_event("OCR_START", "PROCESSING", "Analyzing image with Gemma 4", sender=sender_phone)
+    # Step 1: Visual OCR
+    database.log_event("OCR_START", "PROCESSING", f"Analyzing image with {model_name}", sender=sender_phone)
     if progress_callback:
-        progress_callback(0, 0, f"Analyzing receipt with Gemma 4 ({model_name})...")
+        progress_callback(0, 0, f"Analyzing receipt with {model_name}...")
 
     ocr_result = extract_with_google_genai(
         image_bytes=image_bytes,
@@ -281,12 +415,14 @@ def process_payment_image(
     is_transaction = ocr_result.get("is_transaction", False)
     txn_id = ocr_result.get("transaction_id")
     amount = ocr_result.get("amount")
-    payment_app = ocr_result.get("payment_app")
+    payment_app = ocr_result.get("payment_app") or ocr_result.get("payment_channel")
+    destination_bank = ocr_result.get("destination_bank")
+    account_last4 = ocr_result.get("account_last4")
     confidence = ocr_result.get("confidence", 0.95)
 
-    if not is_transaction or not txn_id:
+    if not is_transaction or not amount:
         reply_text = format_whatsapp_reply(is_transaction=False, is_verified=False)
-        database.log_event("OCR_FAILED", "REJECTED", "No transaction ID detected", sender=sender_phone)
+        database.log_event("OCR_FAILED", "REJECTED", "No transaction details detected", sender=sender_phone)
 
         if sender_phone:
             send_whatsapp_message(sender_phone, reply_text)
@@ -302,6 +438,11 @@ def process_payment_image(
             "elapsed_seconds": round(time.time() - start_time, 2)
         }
 
+    # If transaction_id is missing but it's a valid receipt, assign temporary identifier
+    if not txn_id:
+        txn_id = f"TXN-{int(time.time())}"
+        ocr_result["transaction_id"] = txn_id
+
     # Step 2: Record in Database
     database.save_transaction(
         transaction_id=txn_id,
@@ -311,19 +452,26 @@ def process_payment_image(
         ocr_confidence=confidence,
         raw_ocr_json=json.dumps(ocr_result)
     )
-    database.log_event("OCR_SUCCESS", "EXTRACTED", f"Extracted Txn ID: {txn_id}, Amount: {amount}",
+    database.log_event("OCR_SUCCESS", "EXTRACTED", f"Extracted Txn: {txn_id}, Amount: {amount}, App: {payment_app}",
                        sender=sender_phone, transaction_id=txn_id, amount=amount)
 
-    # Step 3: 60-second Gmail Polling Loop
-    database.log_event("GMAIL_POLL_START", "POLLING", f"Polling Gmail for 60s for {txn_id}",
+    # Step 3: Polling Loop with Gemma 4 Semantic Reconciliation
+    database.log_event("GMAIL_POLL_START", "POLLING", f"Scanning for bank notification & reconciling with Gemma 4 for {txn_id}",
                        sender=sender_phone, transaction_id=txn_id)
 
-    is_verified, gmail_match, poll_elapsed = poll_gmail_for_transaction(
-        transaction_id=txn_id,
+    is_verified, gmail_match, gemma_reconcile, poll_elapsed = poll_and_verify_with_gemma4(
+        ocr_result=ocr_result,
         timeout_seconds=60,
-        poll_interval=5,
+        poll_interval=4,
+        api_key=api_key,
         progress_callback=progress_callback
     )
+
+    official_ref = None
+    reconcile_summary = None
+    if gemma_reconcile:
+        official_ref = gemma_reconcile.get("official_transaction_reference")
+        reconcile_summary = gemma_reconcile.get("reconciliation_summary")
 
     # Step 4: Update Database
     if is_verified and gmail_match:
@@ -331,12 +479,16 @@ def process_payment_image(
             transaction_id=txn_id,
             gmail_message_id=gmail_match.get("id", ""),
             gmail_subject=gmail_match.get("subject", ""),
-            gmail_snippet=gmail_match.get("snippet", "")
+            gmail_snippet=gmail_match.get("snippet", ""),
+            bank_reference=official_ref,
+            reconciliation_summary=reconcile_summary,
+            matched_fields=json.dumps(gemma_reconcile.get("matched_fields", [])) if gemma_reconcile else None,
+            gemma_verified=1
         )
-        database.log_event("VERIFIED", "SUCCESS", f"Confirmed in Gmail: {gmail_match.get('subject')}",
+        database.log_event("VERIFIED", "SUCCESS", f"Confirmed by Gemma 4: Ref {official_ref or txn_id}",
                            sender=sender_phone, transaction_id=txn_id, amount=amount)
     else:
-        database.log_event("UNVERIFIED", "TIMEOUT", "No matching email found within 60s",
+        database.log_event("UNVERIFIED", "TIMEOUT", "No matching bank email confirmed by Gemma 4 within 60s",
                            sender=sender_phone, transaction_id=txn_id, amount=amount)
 
     # Step 5: Format Reply and Dispatch back to WhatsApp
@@ -346,6 +498,10 @@ def process_payment_image(
         transaction_id=txn_id,
         amount=amount,
         payment_app=payment_app,
+        destination_bank=destination_bank,
+        account_last4=account_last4,
+        official_ref=official_ref,
+        reconciliation_summary=reconcile_summary,
         gmail_match=gmail_match,
         elapsed_seconds=poll_elapsed
     )
@@ -360,11 +516,13 @@ def process_payment_image(
         "success": True,
         "is_transaction": True,
         "transaction_id": txn_id,
+        "official_bank_ref": official_ref,
         "amount": amount,
         "payment_app": payment_app,
         "confidence": confidence,
         "ocr_result": ocr_result,
         "verified": is_verified,
+        "gemma_reconcile": gemma_reconcile,
         "gmail_match": gmail_match,
         "reply_text": reply_text,
         "elapsed_seconds": total_time
