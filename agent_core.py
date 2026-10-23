@@ -20,8 +20,8 @@ import google_auth
 logger = logging.getLogger("txnverify.agent")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-# Default vision model: gemini-2.5-flash (Google's multimodal visual OCR engine)
-DEFAULT_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+# Default vision model: gemini-3.8-flash (Google's multimodal visual OCR engine)
+DEFAULT_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 GEMMA_MODEL = os.getenv("GEMMA_MODEL", "gemma-4-26b-a4b-it")
 WHATSAPP_GATEWAY_URL = os.getenv("WHATSAPP_GATEWAY_URL", "http://localhost:3001")
 
@@ -76,11 +76,11 @@ def extract_with_google_genai(
         raise ValueError("Missing Gemini API Key. Please enter your API key in the Setup tab.")
 
     raw_text = ""
-    # Gemma 4 is a text-only language model; multimodal image inputs are handled by gemini-2.5-flash
+    # Gemma 4 is a text-only language model; multimodal image inputs are handled by gemini-3.8-flash
     if "gemma" in model_name.lower():
-        models_to_try = ["gemini-2.5-flash", "gemini-flash-latest", model_name]
+        models_to_try = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-flash-latest"]
     else:
-        models_to_try = [model_name, "gemini-2.5-flash", "gemini-flash-latest"]
+        models_to_try = [model_name, "gemini-3.8-flash", "gemini-2.5-flash", "gemini-flash-latest"]
 
     from google import genai
     from google.genai import types
@@ -217,7 +217,7 @@ Return a valid JSON object ONLY with:
 }}
 Raw JSON only."""
 
-    models_to_try = ["gemma-4-26b-a4b-it", "gemma-4-31b-it", "gemini-2.5-flash"]
+    models_to_try = ["gemma-4-26b-a4b-it", "gemma-4-31b-it", "gemini-3.8-flash", "gemini-2.5-flash"]
     last_err = None
     for m in models_to_try:
         try:

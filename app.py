@@ -479,14 +479,15 @@ with st.sidebar:
     st.markdown("<hr style='border-color: rgba(255,255,255,0.08); margin: 1.2rem 0;'>", unsafe_allow_html=True)
 
     # 3. Model Selector
-    st.markdown("<div class='metric-title'>Vision Model (Gemma 4)</div>", unsafe_allow_html=True)
+    st.markdown("<div class='metric-title'>Vision Model (Image OCR)</div>", unsafe_allow_html=True)
     selected_model = st.selectbox(
         "Vision Model",
-        options=["gemma-4-26b-a4b-it", "gemini-2.5-flash", "gemini-1.5-flash"],
+        options=["gemini-3.8-flash", "gemini-2.5-flash"],
         index=0,
         label_visibility="collapsed"
     )
     database.set_config("gemini_model", selected_model)
+    st.caption("Reconciliation: **Gemma 4b** (`gemma-4-26b-a4b-it`)")
 
     st.markdown("<hr style='border-color: rgba(255,255,255,0.08); margin: 1.2rem 0;'>", unsafe_allow_html=True)
 
