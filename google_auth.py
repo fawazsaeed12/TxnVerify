@@ -97,21 +97,52 @@ def exchange_code_for_token(code: str, redirect_uri: Optional[str] = None) -> Op
         client_secret = client_info.get("client_secret")
         token_uri = client_info.get("token_uri", "https://oauth2.googleapis.com/token")
 
-        # Make token request directly
-        response = requests.post(
-            token_uri,
-            data={
-                "code": code,
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "redirect_uri": target_redirect,
-                "grant_type": "authorization_code"
-            },
-            headers={"Content-Type": "application/x-www-form-urlencoded"}
-        )
+        if not client_id or not client_secret:
+            err_msg = "Client ID or Client Secret is missing. Please save Step 2 credentials first."
+            database.set_config("last_oauth_error", err_msg)
+            database.log_event("AUTH_FAILED", "CONFIG_MISSING", err_msg)
+            return None
+
+        # Helper to attempt token exchange with a specific redirect URI
+        def try_exchange(r_uri: str):
+            return requests.post(
+                token_uri,
+                data={
+                    "code": code,
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "redirect_uri": r_uri,
+                    "grant_type": "authorization_code"
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=15
+            )
+
+        # First attempt with requested redirect URI
+        response = try_exchange(target_redirect)
+
+        # If Google reports redirect_uri_mismatch, try alternate formatting (trailing slash vs no slash)
+        if response.status_code != 200 and "redirect_uri_mismatch" in response.text:
+            alt_redirect = target_redirect[:-1] if target_redirect.endswith("/") else target_redirect + "/"
+            logger.info(f"Retrying token exchange with alternative redirect URI: {alt_redirect}")
+            alt_response = try_exchange(alt_redirect)
+            if alt_response.status_code == 200:
+                response = alt_response
+                target_redirect = alt_redirect
 
         if response.status_code != 200:
-            logger.error(f"Failed to exchange code: {response.text}")
+            error_data = {}
+            try:
+                error_data = response.json()
+            except Exception:
+                pass
+            err_code = error_data.get("error", "oauth_exchange_failed")
+            err_desc = error_data.get("error_description", response.text)
+            err_summary = f"{err_code}: {err_desc}"
+
+            logger.error(f"Failed to exchange code: {err_summary}")
+            database.set_config("last_oauth_error", err_summary)
+            database.log_event("AUTH_FAILED", "FAILED", f"Google OAuth failed: {err_summary}")
             return None
 
         token_data = response.json()
@@ -125,10 +156,14 @@ def exchange_code_for_token(code: str, redirect_uri: Optional[str] = None) -> Op
         )
 
         save_credentials(credentials)
+        database.set_config("last_oauth_error", None)
+        database.log_event("AUTH_SUCCESS", "CONNECTED", "Google OAuth exchange succeeded")
         return credentials
 
     except Exception as e:
         logger.error(f"Error during code exchange: {e}")
+        database.set_config("last_oauth_error", str(e))
+        database.log_event("AUTH_FAILED", "EXCEPTION", str(e))
         return None
 
 

@@ -370,13 +370,19 @@ st.markdown("""
 # -------------------------------------------------------------
 if "code" in st.query_params:
     auth_code = st.query_params["code"]
-    with st.spinner("Exchanging Google authorization code for Gmail access token..."):
-        creds = google_auth.exchange_code_for_token(auth_code, redirect_uri="http://localhost:8501")
-        if creds:
-            database.log_event("AUTH_SUCCESS", "CONNECTED", "Connected via direct Streamlit OAuth redirect")
-            st.toast("Google Account successfully connected!", icon="🎉")
-        else:
-            st.error("Failed to complete Google OAuth exchange. Please verify redirect URI configuration.")
+    # Guard against double-exchange on Streamlit re-render
+    if st.session_state.get("last_processed_code") != auth_code:
+        st.session_state["last_processed_code"] = auth_code
+        with st.spinner("Exchanging Google authorization code for Gmail access token..."):
+            creds = google_auth.exchange_code_for_token(auth_code, redirect_uri="http://localhost:8501")
+            if creds:
+                database.log_event("AUTH_SUCCESS", "CONNECTED", "Connected via direct Streamlit OAuth redirect")
+                st.toast("Google Account successfully connected!", icon="🎉")
+                st.rerun()
+            else:
+                last_err = database.get_config("last_oauth_error", "Redirect URI or authorization grant error.")
+                st.error(f"⚠️ Google OAuth Error: {last_err}")
+                st.info("💡 **Fix:** In Google Cloud Console ➔ Credentials ➔ OAuth Client, ensure **Authorized redirect URIs** contains both `http://localhost:8501` and `http://localhost:8501/`.")
     st.query_params.clear()
 
 if "auth_success" in st.query_params:
@@ -644,10 +650,11 @@ with tab_setup:
         <ol style="margin: 0.4rem 0 0.2rem 1.2rem; padding: 0;">
             <li>Visit <a href="https://console.cloud.google.com/" target="_blank" style="color: #60a5fa; text-decoration: underline;">Google Cloud Console</a> and create or select a project.</li>
             <li>Navigate to <b>APIs & Services ➔ Library</b> and enable the <b>Gmail API</b>.</li>
-            <li>Go to <b>APIs & Services ➔ OAuth consent screen</b>: Choose <i>External</i>, set your support email, and add your email to <i>Test users</i>.</li>
-            <li>Go to <b>Credentials ➔ Create Credentials ➔ OAuth client ID</b>:
-                <br>• Application type: <code>Web application</code>
-                <br>• Authorized redirect URIs: <code>http://localhost:8501</code>
+            <li>Go to <b>APIs & Services ➔ OAuth consent screen</b>: Choose <i>External</i>, fill your email, and under <b>Test users</b> add your Gmail address (e.g. <code>fawazsaeed2012@gmail.com</code>).</li>
+            <li>Go to <b>Credentials ➔ Create Credentials ➔ OAuth client ID</b> (Type: <code>Web application</code>).</li>
+            <li>Under <b>Authorized redirect URIs</b>, add <b>BOTH</b> of these entries (Google requires exact match):
+                <br>• <code>http://localhost:8501</code>
+                <br>• <code>http://localhost:8501/</code>
             </li>
             <li>Copy your <b>Client ID</b> and <b>Client Secret</b> below.</li>
         </ol>
