@@ -83,6 +83,8 @@ def get_google_auth_url(redirect_uri: Optional[str] = None) -> Tuple[str, str]:
         prompt="consent"
     )
     database.set_config("oauth_state", state)
+    if hasattr(flow, "code_verifier") and flow.code_verifier:
+        database.set_config("oauth_code_verifier", flow.code_verifier)
     return auth_url, state
 
 
@@ -103,32 +105,50 @@ def exchange_code_for_token(code: str, redirect_uri: Optional[str] = None) -> Op
             database.log_event("AUTH_FAILED", "CONFIG_MISSING", err_msg)
             return None
 
-        # Helper to attempt token exchange with a specific redirect URI
+        code_verifier = database.get_config("oauth_code_verifier")
+
+        # 1. Primary: Use google_auth_oauthlib Flow.fetch_token (handles PKCE code_verifier natively)
+        alt_redirect = target_redirect[:-1] if target_redirect.endswith("/") else target_redirect + "/"
+        for uri in [target_redirect, alt_redirect]:
+            try:
+                flow = Flow.from_client_config(config, scopes=SCOPES, redirect_uri=uri)
+                if code_verifier:
+                    flow.code_verifier = code_verifier
+                flow.fetch_token(code=code)
+                if flow.credentials:
+                    save_credentials(flow.credentials)
+                    database.set_config("last_oauth_error", None)
+                    database.set_config("oauth_code_verifier", None)
+                    database.log_event("AUTH_SUCCESS", "CONNECTED", f"Google OAuth exchange succeeded via Flow ({uri})")
+                    return flow.credentials
+            except Exception as e_flow:
+                logger.warning(f"Flow.fetch_token attempt for {uri} failed: {e_flow}")
+
+        # 2. Fallback: Direct requests.post with code_verifier
         def try_exchange(r_uri: str):
+            payload = {
+                "code": code,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "redirect_uri": r_uri,
+                "grant_type": "authorization_code"
+            }
+            if code_verifier:
+                payload["code_verifier"] = code_verifier
+
             return requests.post(
                 token_uri,
-                data={
-                    "code": code,
-                    "client_id": client_id,
-                    "client_secret": client_secret,
-                    "redirect_uri": r_uri,
-                    "grant_type": "authorization_code"
-                },
+                data=payload,
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
                 timeout=15
             )
 
-        # First attempt with requested redirect URI
         response = try_exchange(target_redirect)
-
-        # If Google reports redirect_uri_mismatch, try alternate formatting (trailing slash vs no slash)
         if response.status_code != 200 and "redirect_uri_mismatch" in response.text:
-            alt_redirect = target_redirect[:-1] if target_redirect.endswith("/") else target_redirect + "/"
             logger.info(f"Retrying token exchange with alternative redirect URI: {alt_redirect}")
             alt_response = try_exchange(alt_redirect)
             if alt_response.status_code == 200:
                 response = alt_response
-                target_redirect = alt_redirect
 
         if response.status_code != 200:
             error_data = {}
@@ -157,6 +177,7 @@ def exchange_code_for_token(code: str, redirect_uri: Optional[str] = None) -> Op
 
         save_credentials(credentials)
         database.set_config("last_oauth_error", None)
+        database.set_config("oauth_code_verifier", None)
         database.log_event("AUTH_SUCCESS", "CONNECTED", "Google OAuth exchange succeeded")
         return credentials
 
