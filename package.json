@@ -4,6 +4,7 @@
   "description": "WhatsApp Gateway service for TxnVerify AI built with whatsapp-web.js and Express",
   "main": "whatsapp_gateway.js",
   "scripts": {
+    "postinstall": "node patch_wwebjs.js",
     "start": "node whatsapp_gateway.js",
     "dev": "node --watch whatsapp_gateway.js"
   },

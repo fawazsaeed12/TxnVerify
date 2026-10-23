@@ -6,6 +6,7 @@
  */
 
 require('dotenv').config();
+require('./patch_wwebjs.js');
 const express = require('express');
 const cors = require('cors');
 const QRCode = require('qrcode');
@@ -152,17 +153,42 @@ function initWhatsAppClient() {
 
             if (msg.hasMedia) {
                 try {
-                    console.log(`[WhatsApp Gateway] 📥 Downloading media from ${msg.from}...`);
-                    const media = await msg.downloadMedia();
+                    console.log(`[WhatsApp Gateway] 📥 Fetching media from ${msg.from}...`);
+                    
+                    let media = null;
+                    // Progressive retry loop with small backoff (gives WhatsApp Web time to buffer/decrypt)
+                    for (let attempt = 1; attempt <= 3; attempt++) {
+                        try {
+                            // Wait 800ms before first attempt, 1500ms on retries
+                            await new Promise(res => setTimeout(res, attempt === 1 ? 800 : 1500));
+                            media = await msg.downloadMedia();
+                            if (media && media.data) {
+                                console.log(`[WhatsApp Gateway] ✅ Media downloaded successfully on attempt ${attempt}`);
+                                break;
+                            }
+                        } catch (downloadErr) {
+                            console.warn(`[WhatsApp Gateway] Attempt ${attempt}/3 download notice: ${downloadErr.message || downloadErr}`);
+                        }
+                    }
 
-                    if (!media) {
-                        console.warn('[WhatsApp Gateway] Media download returned empty.');
+                    // Fallback to thumbnail body data if full media download was blocked by WhatsApp Web
+                    if (!media && msg._data && msg._data.body && typeof msg._data.body === 'string' && msg._data.body.length > 50) {
+                        console.log('[WhatsApp Gateway] ℹ️ Using embedded message thumbnail data as fallback');
+                        media = {
+                            data: msg._data.body,
+                            mimetype: msg._data.mimetype || 'image/jpeg',
+                            filename: 'receipt.jpg'
+                        };
+                    }
+
+                    if (!media || !media.data) {
+                        console.warn('[WhatsApp Gateway] ⚠️ Could not resolve media buffer from WhatsApp message.');
                         return;
                     }
 
                     // Only forward image types to the Python processing pipeline
                     if (media.mimetype && media.mimetype.startsWith('image/')) {
-                        console.log(`[WhatsApp Gateway] 🔄 Forwarding screenshot (${media.mimetype}) to Python pipeline at ${PYTHON_WEBHOOK_URL}...`);
+                        console.log(`[WhatsApp Gateway] 🔄 Forwarding screenshot (${media.mimetype}, ${Math.round(media.data.length / 1024)} KB) to Python pipeline at ${PYTHON_WEBHOOK_URL}...`);
 
                         const payload = {
                             from: msg.from,
@@ -185,7 +211,7 @@ function initWhatsAppClient() {
                         console.log(`[WhatsApp Gateway] Ignored non-image media type: ${media.mimetype}`);
                     }
                 } catch (err) {
-                    console.error('[WhatsApp Gateway] Error processing incoming media:', err.message);
+                    console.error('[WhatsApp Gateway] Error in media message handler:', err.message || err);
                 }
             }
         });
