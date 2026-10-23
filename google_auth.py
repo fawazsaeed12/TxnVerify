@@ -30,15 +30,11 @@ SCOPES = [
     "openid"
 ]
 
-# Default developer app credentials for hackathon demonstration.
-# Users can also override these via environment variables or the UI.
-DEFAULT_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "1083921849182-demo-txnverify.apps.googleusercontent.com")
-DEFAULT_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "GOCSPX-demoTxnVerifyClientSecret123")
 REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8501")
 
 
 def get_client_config() -> Dict[str, Any]:
-    """Retrieve OAuth client configuration."""
+    """Retrieve OAuth client configuration — reads from DB (set via Setup UI) or env vars."""
     if CLIENT_CONFIG_FILE.exists():
         try:
             with open(CLIENT_CONFIG_FILE, "r") as f:
@@ -46,8 +42,15 @@ def get_client_config() -> Dict[str, Any]:
         except Exception:
             pass
 
-    client_id = os.getenv("GOOGLE_CLIENT_ID", database.get_config("google_client_id", DEFAULT_CLIENT_ID))
-    client_secret = os.getenv("GOOGLE_CLIENT_SECRET", database.get_config("google_client_secret", DEFAULT_CLIENT_SECRET))
+    # Read from database (saved via the Setup tab) then fall back to env vars
+    client_id     = database.get_config("google_client_id", "") or os.getenv("GOOGLE_CLIENT_ID", "")
+    client_secret = database.get_config("google_client_secret", "") or os.getenv("GOOGLE_CLIENT_SECRET", "")
+
+    if not client_id or not client_secret:
+        raise ValueError(
+            "Google OAuth credentials are not configured. "
+            "Please complete Step 2 in the Setup tab."
+        )
 
     return {
         "web": {
@@ -176,10 +179,6 @@ def get_stored_credentials() -> Optional[Credentials]:
 
 def get_user_email() -> Optional[str]:
     """Retrieve the signed-in user's Google email."""
-    # Check if sandbox demo mode is active
-    if database.get_config("sandbox_mode", False):
-        return database.get_config("sandbox_email", "judge-demo@txnverify.ai (Sandbox Mode)")
-
     creds = get_stored_credentials()
     if not creds or not creds.valid:
         return None
@@ -198,24 +197,10 @@ def query_gmail_for_transaction(transaction_id: str) -> Optional[Dict[str, Any]]
     Search Gmail messages for transaction_id.
     Returns matched message dictionary with subject, snippet, id, or None.
     """
-    # 1. First check if Sandbox Demo mode is enabled or if mock email matches
-    if database.get_config("sandbox_mode", False):
-        matches = database.search_mock_emails(transaction_id)
-        if matches:
-            top = matches[0]
-            return {
-                "id": f"mock-{top['id']}",
-                "threadId": f"mock-thread-{top['id']}",
-                "snippet": top["body"][:200],
-                "subject": top["subject"],
-                "sender": top["sender"],
-                "source": "Sandbox Mock Bank Inbox"
-            }
-
-    # 2. Query real Gmail API
     creds = get_stored_credentials()
     if not creds or not creds.valid:
-        # If real Gmail not authenticated, also check mock emails table as fallback
+        # No live credentials — fall back to the local mock-email table
+        # (populated by generate_sample_receipt.py for offline testing)
         matches = database.search_mock_emails(transaction_id)
         if matches:
             top = matches[0]
@@ -225,7 +210,7 @@ def query_gmail_for_transaction(transaction_id: str) -> Optional[Dict[str, Any]]
                 "snippet": top["body"][:200],
                 "subject": top["subject"],
                 "sender": top["sender"],
-                "source": "Mock Bank Inbox (Fallback)"
+                "source": "Local test data (no Gmail connected)"
             }
         return None
 
@@ -269,11 +254,10 @@ def query_gmail_for_transaction(transaction_id: str) -> Optional[Dict[str, Any]]
 
 
 def sign_out() -> None:
-    """Clear credentials."""
+    """Clear all stored credentials."""
     if TOKEN_FILE.exists():
         try:
             TOKEN_FILE.unlink()
         except Exception:
             pass
     database.set_config("google_token", None)
-    database.set_config("sandbox_mode", False)
