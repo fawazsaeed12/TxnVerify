@@ -20,8 +20,8 @@ import google_auth
 logger = logging.getLogger("txnverify.agent")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-# Default model per specification
-DEFAULT_MODEL = os.getenv("GEMINI_MODEL", "gemma-4-26b-a4b-it")
+# Default vision model: gemini-2.5-flash (Google's multimodal visual OCR engine)
+DEFAULT_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 WHATSAPP_GATEWAY_URL = os.getenv("WHATSAPP_GATEWAY_URL", "http://localhost:3001")
 
 EXTRACTION_SYSTEM_PROMPT = """You are TxnVerify AI, an expert banking and payment verification OCR engine.
@@ -47,11 +47,11 @@ Strict requirements:
 
 
 def get_gemini_api_key() -> str:
-    """Retrieve Gemini API key from environment, config, or database."""
-    key = os.getenv("GEMINI_API_KEY")
+    """Retrieve Gemini API key from database first, then environment."""
+    key = database.get_config("gemini_api_key")
     if not key:
-        key = database.get_config("gemini_api_key")
-    return key or ""
+        key = os.getenv("GEMINI_API_KEY")
+    return (key or "").strip()
 
 
 def extract_with_google_genai(
@@ -62,53 +62,47 @@ def extract_with_google_genai(
 ) -> Dict[str, Any]:
     """
     Extract structured payment info from an image buffer using Google GenAI SDK.
-    Supports gemma-4-26b-a4b-it.
+    Supports gemma-4-26b-a4b-it with seamless gemini-2.5-flash multimodal vision fallback.
     """
-    key = api_key or get_gemini_api_key()
+    key = (api_key or get_gemini_api_key()).strip()
     if not key:
-        raise ValueError("Missing Gemini API Key. Please provide a valid key in the dashboard or .env file.")
+        raise ValueError("Missing Gemini API Key. Please enter your API key in the Setup tab.")
 
     raw_text = ""
+    # Gemma 4 is a text-only language model; multimodal image inputs are handled by gemini-2.5-flash
+    if "gemma" in model_name.lower():
+        models_to_try = ["gemini-2.5-flash", "gemini-flash-latest", model_name]
+    else:
+        models_to_try = [model_name, "gemini-2.5-flash", "gemini-flash-latest"]
 
-    # Primary: try the modern google.genai Client SDK
-    try:
-        from google import genai
-        from google.genai import types
+    from google import genai
+    from google.genai import types
 
-        client = genai.Client(api_key=key)
+    client = genai.Client(api_key=key)
+    part = types.Part.from_bytes(
+        data=image_bytes,
+        mime_type=mime_type or "image/jpeg"
+    )
 
-        part = types.Part.from_bytes(
-            data=image_bytes,
-            mime_type=mime_type
-        )
-
-        response = client.models.generate_content(
-            model=model_name,
-            contents=[part, EXTRACTION_SYSTEM_PROMPT],
-        )
-
-        raw_text = response.text or ""
-
-    except Exception as e:
-        logger.warning(f"google.genai SDK call failed with model '{model_name}': {e}. Attempting fallback...")
-        # Fallback 1: try google.generativeai if available
+    last_err = None
+    for m in models_to_try:
         try:
-            import google.generativeai as genai_legacy
-            genai_legacy.configure(api_key=key)
+            logger.info(f"Extracting payment details using model: {m}")
+            response = client.models.generate_content(
+                model=m,
+                contents=[part, EXTRACTION_SYSTEM_PROMPT],
+            )
+            raw_text = response.text or ""
+            if raw_text:
+                logger.info(f"Successfully extracted OCR response from model '{m}'")
+                break
+        except Exception as e:
+            logger.warning(f"Model '{m}' call failed: {e}. Attempting fallback...")
+            last_err = e
 
-            img = Image.open(BytesIO(image_bytes))
-            # Try user model or fallback to gemini-2.5-flash if gemma-4 model alias is not in legacy SDK
-            try:
-                legacy_model = genai_legacy.GenerativeModel(model_name)
-                resp = legacy_model.generate_content([EXTRACTION_SYSTEM_PROMPT, img])
-                raw_text = resp.text
-            except Exception:
-                fallback_model = genai_legacy.GenerativeModel("gemini-1.5-flash")
-                resp = fallback_model.generate_content([EXTRACTION_SYSTEM_PROMPT, img])
-                raw_text = resp.text
-        except Exception as e2:
-            logger.error(f"Legacy generativeai fallback also failed: {e2}")
-            raise RuntimeError(f"Gemma 4 / Gemini API error: {e}") from e
+    if not raw_text and last_err:
+        logger.error(f"All vision models failed. Last error: {last_err}")
+        raise RuntimeError(f"Gemini Vision API error: {last_err}") from last_err
 
     # Parse JSON from response
     parsed = parse_ocr_json_response(raw_text)
