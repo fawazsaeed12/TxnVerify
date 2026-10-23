@@ -137,31 +137,6 @@ Open your browser to: **`http://localhost:8501`**
 
 ---
 
-## 🧪 Judge Evaluation Walkthrough (2-Minute Demo)
-
-1. Open **`http://localhost:8501`**.
-2. In the left sidebar:
-   - Enter your **Gemini API Key** (Gemma 4 `gemma-4-26b-a4b-it`).
-   - Click **"Sign in with Google"** to connect your Gmail, OR check **"🧪 Enable Judge Demo Inbox"** to use the instant sandbox.
-3. Switch to the **"🧪 Judge Test Panel"** tab:
-   - Click one of the quick samples: **Zelle ($150.00)**, **Venmo ($45.00)**, or **Google Pay UPI (₹2,500.00)**.
-   - Click **"🚀 Run Live Verification Pipeline"**.
-4. Observe the real-time execution:
-   - **Gemma 4** extracts `{ is_transaction: true, transaction_id: "ZEL-982341908", amount: "$150.00" }`.
-   - The polling loop searches Gmail inbox for `ZEL-982341908`.
-   - The system displays the matched bank notification email snippet and generates the automated WhatsApp confirmation reply:
-     ```
-     ✅ Payment Confirmed!
-     • Transaction ID: ZEL-982341908
-     • Amount: $150.00
-     • Method: Zelle
-     • Verified via: Chase Alert
-     • Response Time: 0.12s
-     ```
-5. Check the **"📊 Live Activity & Audit Logs"** tab to view the recorded transaction history and timestamps.
-6. Optional: To test real WhatsApp chat monitoring, switch to **"📱 WhatsApp QR Pairing"**, scan the QR code with WhatsApp, and message a payment screenshot to that number!
-
----
 
 ## 🔒 Security & Privacy
 
