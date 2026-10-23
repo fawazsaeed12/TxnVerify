@@ -6,11 +6,8 @@ Powered by Gemma 4 (gemma-4-26b-a4b-it) & Google Gmail API
 
 import os
 import time
-import base64
 import requests
 from pathlib import Path
-from PIL import Image
-
 import streamlit as st
 import pandas as pd
 
@@ -22,7 +19,7 @@ import agent_core
 # Page Configuration & Advanced Theme Injection
 # -------------------------------------------------------------
 st.set_page_config(
-    page_title="TxnVerify AI | Intelligent WhatsApp Payment Gateway",
+    page_title="TxnVerify AI | WhatsApp Payment Verification Gateway",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -63,7 +60,7 @@ st.markdown("""
 
     /* Sidebar Glassmorphism */
     [data-testid="stSidebar"] {
-        background: rgba(11, 16, 27, 0.88) !important;
+        background: rgba(11, 16, 27, 0.92) !important;
         backdrop-filter: blur(20px) !important;
         border-right: 1px solid var(--border-color) !important;
     }
@@ -100,8 +97,8 @@ st.markdown("""
         border-radius: 10px !important;
         color: var(--text-secondary) !important;
         font-weight: 600 !important;
-        font-size: 0.88rem !important;
-        padding: 8px 18px !important;
+        font-size: 0.92rem !important;
+        padding: 10px 22px !important;
         transition: all 0.2s ease !important;
     }
 
@@ -236,83 +233,88 @@ st.markdown("""
         100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
     }
 
-    /* WhatsApp Authentic Message Preview */
-    .wa-chat-container {
-        background: #0b141a;
-        background-image: radial-gradient(#1f2c34 1px, transparent 1px);
-        background-size: 20px 20px;
-        border: 1px solid rgba(255, 255, 255, 0.1);
+    /* Setup Step Card */
+    .setup-step-box {
+        background: rgba(17, 24, 39, 0.65);
+        border: 1px solid rgba(255, 255, 255, 0.08);
         border-radius: 18px;
-        padding: 1.5rem;
-        position: relative;
+        padding: 1.5rem 1.8rem;
+        margin-bottom: 1.2rem;
+        backdrop-filter: blur(14px);
+        transition: border-color 0.2s ease;
     }
 
-    .wa-header {
+    .setup-step-box:hover {
+        border-color: rgba(59, 130, 246, 0.35);
+    }
+
+    .step-header {
         display: flex;
         align-items: center;
-        gap: 12px;
-        padding-bottom: 1rem;
+        gap: 14px;
         margin-bottom: 1rem;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
     }
 
-    .wa-avatar {
-        width: 38px;
-        height: 38px;
-        border-radius: 50%;
-        background: linear-gradient(135deg, #00a884, #005c4b);
+    .step-badge {
+        width: 34px;
+        height: 34px;
+        border-radius: 10px;
         display: flex;
         align-items: center;
         justify-content: center;
-        font-size: 1.1rem;
-        font-weight: bold;
+        font-size: 0.95rem;
+        font-weight: 800;
+        flex-shrink: 0;
+    }
+
+    .step-badge-ready {
+        background: #10b981;
         color: white;
+        box-shadow: 0 0 12px rgba(16, 185, 129, 0.4);
     }
 
-    .wa-bubble-confirmed {
-        background: #005c4b;
-        color: #e9edef;
-        padding: 14px 18px;
-        border-radius: 12px 12px 2px 12px;
-        font-size: 0.92rem;
+    .step-badge-pending {
+        background: #3b82f6;
+        color: white;
+        box-shadow: 0 0 12px rgba(59, 130, 246, 0.4);
+    }
+
+    .step-title-text {
+        font-size: 1.1rem;
+        font-weight: 700;
+        color: #ffffff;
+    }
+
+    .step-desc-text {
+        font-size: 0.85rem;
+        color: #94a3b8;
+        margin-top: 2px;
+    }
+
+    /* Instructions Box */
+    .instruction-callout {
+        background: rgba(15, 23, 42, 0.7);
+        border-left: 3px solid #3b82f6;
+        border-radius: 0 10px 10px 0;
+        padding: 0.9rem 1.2rem;
+        margin: 0.8rem 0 1rem;
+        font-size: 0.86rem;
+        color: #cbd5e1;
         line-height: 1.6;
-        margin-left: auto;
-        max-width: 88%;
-        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
-        white-space: pre-wrap;
-        position: relative;
     }
 
-    .wa-bubble-unverified {
-        background: #391e24;
-        color: #ffccd3;
-        border: 1px solid rgba(248, 113, 113, 0.3);
-        padding: 14px 18px;
-        border-radius: 12px 12px 2px 12px;
-        font-size: 0.92rem;
-        line-height: 1.6;
-        margin-left: auto;
-        max-width: 88%;
-        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
-        white-space: pre-wrap;
+    .instruction-callout code {
+        background: rgba(59, 130, 246, 0.18);
+        color: #93c5fd;
+        padding: 2px 7px;
+        border-radius: 4px;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.82rem;
     }
 
-    /* Step Timeline Pills */
-    .pipeline-step {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 10px 14px;
-        background: rgba(30, 41, 59, 0.5);
-        border: 1px solid rgba(255, 255, 255, 0.06);
-        border-radius: 10px;
-        margin-bottom: 8px;
-        font-size: 0.88rem;
-    }
-
-    /* Inputs & Form Overrides */
+    /* Form Overrides */
     .stTextInput input {
-        background: rgba(15, 23, 42, 0.6) !important;
+        background: rgba(15, 23, 42, 0.7) !important;
         border: 1px solid rgba(255, 255, 255, 0.12) !important;
         color: #ffffff !important;
         border-radius: 10px !important;
@@ -341,6 +343,18 @@ st.markdown("""
         box-shadow: 0 6px 20px rgba(37, 99, 235, 0.45) !important;
     }
 
+    /* Link Buttons */
+    .stLinkButton a {
+        background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%) !important;
+        color: #ffffff !important;
+        font-weight: 600 !important;
+        border: 1px solid rgba(255, 255, 255, 0.15) !important;
+        border-radius: 10px !important;
+        padding: 0.6rem 1.4rem !important;
+        box-shadow: 0 4px 14px rgba(37, 99, 235, 0.35) !important;
+        transition: all 0.2s ease !important;
+    }
+
     /* Dataframe styling */
     [data-testid="stDataFrame"] {
         border: 1px solid var(--border-color);
@@ -352,17 +366,17 @@ st.markdown("""
 
 
 # -------------------------------------------------------------
-# Handle Google OAuth 2.0 Direct Callback
+# Handle Google OAuth 2.0 Web Flow Redirect Callback
 # -------------------------------------------------------------
 if "code" in st.query_params:
     auth_code = st.query_params["code"]
-    with st.spinner("Authorizing Gmail API access with Google..."):
+    with st.spinner("Exchanging Google authorization code for Gmail access token..."):
         creds = google_auth.exchange_code_for_token(auth_code, redirect_uri="http://localhost:8501")
         if creds:
             database.log_event("AUTH_SUCCESS", "CONNECTED", "Connected via direct Streamlit OAuth redirect")
             st.toast("Google Account successfully connected!", icon="🎉")
         else:
-            st.error("Failed to exchange Google OAuth code. Check Redirect URI settings.")
+            st.error("Failed to complete Google OAuth exchange. Please verify redirect URI configuration.")
     st.query_params.clear()
 
 if "auth_success" in st.query_params:
@@ -371,10 +385,32 @@ if "auth_success" in st.query_params:
 
 
 # -------------------------------------------------------------
-# Sidebar Configuration & Controls
+# System Configuration State Check
 # -------------------------------------------------------------
 GATEWAY_URL = os.getenv("WHATSAPP_GATEWAY_URL", "http://localhost:3001")
 
+def get_system_status():
+    gemini_key = (database.get_config("gemini_api_key", "") or os.getenv("GEMINI_API_KEY", "")).strip()
+    client_id = (database.get_config("google_client_id", "") or os.getenv("GOOGLE_CLIENT_ID", "")).strip()
+    client_secret = (database.get_config("google_client_secret", "") or os.getenv("GOOGLE_CLIENT_SECRET", "")).strip()
+    creds = google_auth.get_stored_credentials()
+    gmail_ok = creds is not None and creds.valid
+    is_sandbox = database.get_config("sandbox_mode", False)
+    
+    return {
+        "gemini_ready": bool(gemini_key),
+        "oauth_ready": bool(client_id and client_secret),
+        "gmail_ready": bool(gmail_ok or is_sandbox),
+        "sandbox_mode": is_sandbox,
+        "all_ready": bool(gemini_key and (gmail_ok or is_sandbox))
+    }
+
+sys_status = get_system_status()
+
+
+# -------------------------------------------------------------
+# Sidebar: Global Navigation & Status Center
+# -------------------------------------------------------------
 with st.sidebar:
     st.markdown("""
     <div style="display: flex; align-items: center; gap: 12px; padding: 0.5rem 0 1rem;">
@@ -383,14 +419,14 @@ with st.sidebar:
         </div>
         <div>
             <div style="font-weight: 800; font-size: 1.15rem; color: #ffffff; letter-spacing: -0.02em;">TxnVerify AI</div>
-            <div style="font-size: 0.78rem; color: #94a3b8;">Autonomous Verification Agent</div>
+            <div style="font-size: 0.78rem; color: #94a3b8;">WhatsApp Payment Agent</div>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
     st.markdown("<hr style='border-color: rgba(255,255,255,0.08); margin: 0.5rem 0 1.2rem;'>", unsafe_allow_html=True)
 
-    # 1. Master Agent Switch
+    # 1. Master Agent Active Toggle
     is_agent_active = database.get_config("agent_running", True)
     agent_toggle = st.toggle("🤖 Agent Live Monitoring", value=is_agent_active)
     if agent_toggle != is_agent_active:
@@ -411,71 +447,50 @@ with st.sidebar:
         </div>
         """, unsafe_allow_html=True)
 
-    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("<hr style='border-color: rgba(255,255,255,0.08); margin: 1.2rem 0;'>", unsafe_allow_html=True)
 
-    # 2. Gemini / Gemma 4 Credentials
-    st.markdown("<div class='metric-title'>Core AI Model (Vision OCR)</div>", unsafe_allow_html=True)
-    current_key = database.get_config("gemini_api_key", os.getenv("GEMINI_API_KEY", ""))
-    gemini_key = st.text_input(
-        "Google Gemini API Key",
-        value=current_key,
-        type="password",
-        placeholder="Enter key for Gemma 4...",
-        help="Access key from Google AI Studio. Used by gemma-4-26b-a4b-it."
-    )
-    if gemini_key != current_key:
-        database.set_config("gemini_api_key", gemini_key)
-        os.environ["GEMINI_API_KEY"] = gemini_key
-        st.toast("Gemini API Key saved!", icon="🔑")
+    # 2. System Readiness Checklist
+    st.markdown("<div class='metric-title'>Integration Health</div>", unsafe_allow_html=True)
+    
+    def render_check_item(label: str, is_ready: bool):
+        dot_color = "#34d399" if is_ready else "#64748b"
+        icon = "✓" if is_ready else "○"
+        status_text = "Ready" if is_ready else "Setup Needed"
+        st.markdown(f"""
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 6px 0;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="color: {dot_color}; font-weight: 800;">{icon}</span>
+                <span style="font-size: 0.85rem; color: #cbd5e1;">{label}</span>
+            </div>
+            <span style="font-size: 0.75rem; color: {dot_color}; font-weight: 600;">{status_text}</span>
+        </div>
+        """, unsafe_allow_html=True)
 
+    render_check_item("Gemini API Key", sys_status["gemini_ready"])
+    render_check_item("Google OAuth Config", sys_status["oauth_ready"])
+    render_check_item("Gmail Verification", sys_status["gmail_ready"])
+
+    st.markdown("<hr style='border-color: rgba(255,255,255,0.08); margin: 1.2rem 0;'>", unsafe_allow_html=True)
+
+    # 3. Model Selector
+    st.markdown("<div class='metric-title'>Vision Model (Gemma 4)</div>", unsafe_allow_html=True)
     selected_model = st.selectbox(
-        "Model Selection",
+        "Vision Model",
         options=["gemma-4-26b-a4b-it", "gemini-2.5-flash", "gemini-1.5-flash"],
         index=0,
-        help="Gemma 4 provides visual OCR and high-fidelity transaction parameter extraction."
+        label_visibility="collapsed"
     )
     database.set_config("gemini_model", selected_model)
 
     st.markdown("<hr style='border-color: rgba(255,255,255,0.08); margin: 1.2rem 0;'>", unsafe_allow_html=True)
 
-    # 3. Google OAuth & Gmail Account Status
-    st.markdown("<div class='metric-title'>Gmail Confirmation Feed</div>", unsafe_allow_html=True)
-    connected_email = google_auth.get_user_email()
-
-    if connected_email:
-        st.markdown(f"""
-        <div style="background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.25); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px;">
-            <div style="font-size: 0.72rem; color: #34d399; font-weight: 700; text-transform: uppercase;">CONNECTED ACCOUNT</div>
-            <div style="font-size: 0.86rem; color: #f1f5f9; font-weight: 600; text-overflow: ellipsis; overflow: hidden;">{connected_email}</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        if st.button("Sign Out of Google", type="secondary", use_container_width=True):
-            google_auth.sign_out()
-            st.rerun()
-    else:
-        try:
-            auth_url, _ = google_auth.get_google_auth_url(redirect_uri="http://localhost:8501")
-            st.link_button("🌐 Sign in with Google", auth_url, type="primary", use_container_width=True)
-        except Exception:
-            pass
-
-    # Quick Mock Sandbox Toggle (for offline testing)
-    is_mock = database.get_config("sandbox_mode", False)
-    mock_box = st.checkbox("🧪 Offline Sandbox Mode", value=is_mock, help="Simulate bank email matches without live Gmail")
-    if mock_box != is_mock:
-        database.set_config("sandbox_mode", mock_box)
-        st.rerun()
-
-    st.markdown("<hr style='border-color: rgba(255,255,255,0.08); margin: 1.2rem 0;'>", unsafe_allow_html=True)
-
     # 4. WhatsApp Gateway Status Indicator
-    st.markdown("<div class='metric-title'>WhatsApp Service (:3001)</div>", unsafe_allow_html=True)
+    st.markdown("<div class='metric-title'>WhatsApp Gateway (:3001)</div>", unsafe_allow_html=True)
     try:
         gw_res = requests.get(f"{GATEWAY_URL}/status", timeout=1.5)
         if gw_res.status_code == 200:
-            status = gw_res.json().get("status", "UNKNOWN")
-            badge = "🟢 ONLINE" if status == "READY" else f"🟡 {status}"
+            gw_status = gw_res.json().get("status", "UNKNOWN")
+            badge = "🟢 ONLINE" if gw_status == "READY" else f"🟡 {gw_status}"
             st.caption(f"Status: **{badge}**")
         else:
             st.caption("Status: 🔴 OFFLINE")
@@ -484,7 +499,7 @@ with st.sidebar:
 
 
 # -------------------------------------------------------------
-# Top Hero Header & Live KPI Metric Bar
+# Top Hero Header & Live KPI Metrics Bar
 # -------------------------------------------------------------
 st.markdown("""
 <div class="hero-container">
@@ -532,172 +547,198 @@ st.markdown(f"""
 
 
 # -------------------------------------------------------------
-# Interactive SaaS Workstation Tabs
+# Core Tabs: Setup, WhatsApp Gateway, Transactions & Logs
 # -------------------------------------------------------------
-tab_verify, tab_whatsapp, tab_audit, tab_setup = st.tabs([
-    "⚡ Live Verification Sandbox",
-    "📱 WhatsApp Gateway Station",
-    "📜 Real-Time Audit Trail",
-    "⚙️ Integration & Setup Guide"
+tab_setup, tab_whatsapp, tab_audit = st.tabs([
+    "⚙️ Setup & Authentication",
+    "📱 WhatsApp Gateway",
+    "📜 Real-Time Audit Trail"
 ])
 
 
 # =============================================================
-# TAB 1: LIVE VERIFICATION SANDBOX
+# TAB 1: SETUP & AUTHENTICATION
 # =============================================================
-with tab_verify:
-    st.markdown("#### Instant Receipt Verification Engine")
+with tab_setup:
+    st.markdown("#### Application Credentials & API Configuration")
     st.markdown(
         "<p style='color: var(--text-secondary); margin-top: -0.4rem; font-size: 0.92rem;'>"
-        "Upload a payment confirmation screenshot to test <b>Gemma 4</b> visual extraction, "
-        "the <b>60-Second Gmail Polling Loop</b>, and the automated <b>WhatsApp Dispatch</b>."
+        "Configure your <b>Gemini API Key</b> (for Gemma 4 OCR) and authorize your <b>Gmail Account</b> "
+        "to allow TxnVerify AI to query transaction confirmations in real time."
         "</p>",
         unsafe_allow_html=True
     )
+    st.markdown("<br>", unsafe_allow_html=True)
 
-    col_input, col_output = st.columns([1, 1], gap="large")
+    # ---------------------------------------------------------
+    # Step 1: Google Gemini API Key (Gemma 4 Access)
+    # ---------------------------------------------------------
+    step1_ready = sys_status["gemini_ready"]
+    badge_cls = "step-badge-ready" if step1_ready else "step-badge-pending"
+    badge_icon = "✓" if step1_ready else "1"
 
-    with col_input:
-        st.markdown("<div class='metric-title'>1. Select Payment Receipt</div>", unsafe_allow_html=True)
-
-        # High-End Preset Selector
-        preset = st.radio(
-            "Presets & Upload",
-            ["Zelle Transfer ($150.00)", "Venmo Payment ($45.00)", "Google Pay UPI (₹2,500.00)", "Custom Upload"],
-            horizontal=True,
-            label_visibility="collapsed"
-        )
-
-        sample_dir = Path(__file__).parent / "sample_receipts"
-        selected_bytes = None
-        selected_mime = "image/jpeg"
-        selected_label = ""
-
-        if preset == "Zelle Transfer ($150.00)":
-            p = sample_dir / "zelle_receipt_150.jpg"
-            if p.exists():
-                selected_bytes = p.read_bytes()
-                selected_label = "Zelle Transfer: Ref ZEL-982341908 ($150.00)"
-        elif preset == "Venmo Payment ($45.00)":
-            p = sample_dir / "venmo_receipt_45.jpg"
-            if p.exists():
-                selected_bytes = p.read_bytes()
-                selected_label = "Venmo Payment: Ref VEN-549102834 ($45.00)"
-        elif preset == "Google Pay UPI (₹2,500.00)":
-            p = sample_dir / "upi_receipt_2500.jpg"
-            if p.exists():
-                selected_bytes = p.read_bytes()
-                selected_label = "UPI Transfer: Ref UPI-409182390192 (₹2,500.00)"
-        else:
-            up_file = st.file_uploader("Upload Receipt (.jpg, .png)", type=["jpg", "jpeg", "png", "webp"], label_visibility="collapsed")
-            if up_file:
-                selected_bytes = up_file.getvalue()
-                selected_mime = up_file.type
-                selected_label = up_file.name
-
-        if selected_bytes:
-            st.image(selected_bytes, caption=selected_label, use_container_width=True)
-
-        sender_number = st.text_input("Customer WhatsApp Sender Number", value="+1 (555) 392-1092")
-
-        trigger_verify = st.button("🚀 Execute Verification Pipeline", type="primary", use_container_width=True,
-                                   disabled=selected_bytes is None)
-
-    with col_output:
-        st.markdown("<div class='metric-title'>2. Real-Time Pipeline Trace & WhatsApp Reply</div>", unsafe_allow_html=True)
-
-        if trigger_verify and selected_bytes:
-            progress_bar = st.progress(10, text="Initializing Gemma 4 Multimodal Visual OCR...")
-            trace_box = st.empty()
-
-            def update_trace(attempt: int, elapsed: int, msg: str):
-                val = min(15 + int((elapsed / 60) * 80), 95)
-                progress_bar.progress(val, text=f"[{elapsed}s] {msg}")
-
-            try:
-                trace_box.info(f"🧠 Gemma 4 ({selected_model}) analyzing receipt visual geometry...")
-
-                # Run Pipeline
-                result = agent_core.process_payment_image(
-                    image_bytes=selected_bytes,
-                    mime_type=selected_mime,
-                    sender_phone=sender_number,
-                    model_name=selected_model,
-                    progress_callback=update_trace
-                )
-
-                progress_bar.progress(100, text="Pipeline execution finished!")
-                trace_box.empty()
-
-                is_verified = result.get("verified", False)
-                is_txn = result.get("is_transaction", False)
-
-                # Output Banner
-                if is_verified:
-                    st.success(f"✅ **PAYMENT CONFIRMED** in {result.get('elapsed_seconds')}s via Gmail API")
-                elif is_txn:
-                    st.error(f"❌ **UNVERIFIED PAYMENT** — No matching credit notification in Gmail after 60s")
-                else:
-                    st.warning("⚠️ **INVALID IMAGE** — Receipt features or transaction reference not detected")
-
-                # Extraction Summary Cards
-                st.markdown("<div class='metric-title' style='margin-top: 1rem;'>Gemma 4 Structured Parameters</div>", unsafe_allow_html=True)
-                c_a, c_b = st.columns(2)
-                c_a.metric("Transaction ID", result.get("transaction_id") or "None")
-                c_a.metric("Amount", result.get("amount") or "None")
-                c_b.metric("Platform", result.get("payment_app") or "N/A")
-                c_b.metric("OCR Confidence", f"{round(result.get('confidence', 0.95) * 100)}%")
-
-                # Matched Gmail Confirmation
-                gmail_match = result.get("gmail_match")
-                if gmail_match:
-                    with st.expander("📬 Matched Gmail Bank Notification", expanded=True):
-                        st.markdown(f"**Subject:** {gmail_match.get('subject')}")
-                        st.markdown(f"**Sender:** {gmail_match.get('sender')}")
-                        st.markdown(f"**Source:** `{gmail_match.get('source')}`")
-                        st.caption(f"\"{gmail_match.get('snippet')}\"")
-
-                # WhatsApp Interactive Bubble
-                st.markdown("<div class='metric-title' style='margin-top: 1.2rem;'>Customer WhatsApp Response</div>", unsafe_allow_html=True)
-                bubble_class = "wa-bubble-confirmed" if is_verified else "wa-bubble-unverified"
-                now_time = time.strftime("%H:%M")
-
-                st.markdown(f"""
-                <div class="wa-chat-container">
-                    <div class="wa-header">
-                        <div class="wa-avatar">TV</div>
-                        <div>
-                            <div style="font-weight: 700; color: #e9edef; font-size: 0.95rem;">TxnVerify AI Assistant</div>
-                            <div style="font-size: 0.75rem; color: #8696a0;">Official WhatsApp Gateway • Online</div>
-                        </div>
-                    </div>
-                    <div class="{bubble_class}">
-{result.get('reply_text')}
-                        <div style="font-size: 0.68rem; color: #8696a0; text-align: right; margin-top: 6px;">
-                            {now_time} <span style="color: #53bdeb;">✓✓</span>
-                        </div>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-
-            except Exception as e:
-                progress_bar.empty()
-                trace_box.error(f"Execution Error: {e}")
-                st.exception(e)
-        else:
-            st.markdown("""
-            <div style="height: 340px; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(17, 24, 39, 0.4); border: 1px dashed rgba(255, 255, 255, 0.15); border-radius: 18px; text-align: center; padding: 2rem;">
-                <div style="font-size: 2.5rem; margin-bottom: 0.8rem;">⚡</div>
-                <div style="font-weight: 700; color: #f8fafc; font-size: 1.05rem;">Awaiting Verification Request</div>
-                <div style="font-size: 0.85rem; color: #94a3b8; max-width: 320px; margin-top: 0.3rem;">
-                    Select a preset receipt or drop an image on the left, then click <b>Execute Verification Pipeline</b>.
-                </div>
+    st.markdown(f"""
+    <div class="setup-step-box">
+        <div class="step-header">
+            <div class="step-badge {badge_cls}">{badge_icon}</div>
+            <div>
+                <div class="step-title-text">Step 1: Google Gemini API Key (Gemma 4 Multimodal)</div>
+                <div class="step-desc-text">Required to extract structured transaction references and amounts from payment screenshots.</div>
             </div>
-            """, unsafe_allow_html=True)
+        </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="instruction-callout">
+        <b>How to get your free Gemini API Key:</b>
+        <ol style="margin: 0.4rem 0 0.2rem 1.2rem; padding: 0;">
+            <li>Go to <a href="https://aistudio.google.com/apikey" target="_blank" style="color: #60a5fa; text-decoration: underline;">Google AI Studio API Keys</a>.</li>
+            <li>Click <b>Create API Key</b> and copy your key string (starts with <code>AIzaSy...</code>).</li>
+            <li>Paste your key below and click <b>Save Gemini Key</b>.</li>
+        </ol>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col_key_in, col_key_btn = st.columns([3, 1])
+    current_gemini_key = database.get_config("gemini_api_key", os.getenv("GEMINI_API_KEY", ""))
+    input_gemini = col_key_in.text_input(
+        "Gemini API Key",
+        value=current_gemini_key,
+        type="password",
+        placeholder="AIzaSy...",
+        label_visibility="collapsed"
+    )
+    if col_key_btn.button("Save Gemini Key", type="primary", use_container_width=True):
+        if input_gemini.strip():
+            database.set_config("gemini_api_key", input_gemini.strip())
+            os.environ["GEMINI_API_KEY"] = input_gemini.strip()
+            st.success("Gemini API Key successfully saved and verified!")
+            st.rerun()
+        else:
+            st.warning("Please provide a valid Gemini API Key.")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ---------------------------------------------------------
+    # Step 2: Google Cloud OAuth 2.0 Credentials (Client ID & Secret)
+    # ---------------------------------------------------------
+    step2_ready = sys_status["oauth_ready"]
+    badge_cls2 = "step-badge-ready" if step2_ready else "step-badge-pending"
+    badge_icon2 = "✓" if step2_ready else "2"
+
+    st.markdown(f"""
+    <div class="setup-step-box">
+        <div class="step-header">
+            <div class="step-badge {badge_cls2}">{badge_icon2}</div>
+            <div>
+                <div class="step-title-text">Step 2: Google Cloud OAuth 2.0 Client Credentials</div>
+                <div class="step-desc-text">Enables the secure "Sign in with Google" flow requesting read-only Gmail access.</div>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="instruction-callout">
+        <b>Quick Setup in Google Cloud Console:</b>
+        <ol style="margin: 0.4rem 0 0.2rem 1.2rem; padding: 0;">
+            <li>Visit <a href="https://console.cloud.google.com/" target="_blank" style="color: #60a5fa; text-decoration: underline;">Google Cloud Console</a> and create or select a project.</li>
+            <li>Navigate to <b>APIs & Services ➔ Library</b> and enable the <b>Gmail API</b>.</li>
+            <li>Go to <b>APIs & Services ➔ OAuth consent screen</b>: Choose <i>External</i>, set your support email, and add your email to <i>Test users</i>.</li>
+            <li>Go to <b>Credentials ➔ Create Credentials ➔ OAuth client ID</b>:
+                <br>• Application type: <code>Web application</code>
+                <br>• Authorized redirect URIs: <code>http://localhost:8501</code>
+            </li>
+            <li>Copy your <b>Client ID</b> and <b>Client Secret</b> below.</li>
+        </ol>
+    </div>
+    """, unsafe_allow_html=True)
+
+    c_id_col, c_sec_col = st.columns(2)
+    saved_cid = database.get_config("google_client_id", os.getenv("GOOGLE_CLIENT_ID", ""))
+    saved_csec = database.get_config("google_client_secret", os.getenv("GOOGLE_CLIENT_SECRET", ""))
+
+    inp_cid = c_id_col.text_input("Client ID", value=saved_cid, placeholder="...apps.googleusercontent.com")
+    inp_csec = c_sec_col.text_input("Client Secret", value=saved_csec, type="password", placeholder="GOCSPX-...")
+
+    if st.button("Save Google OAuth Credentials", type="primary"):
+        if inp_cid.strip() and inp_csec.strip():
+            database.set_config("google_client_id", inp_cid.strip())
+            database.set_config("google_client_secret", inp_csec.strip())
+            os.environ["GOOGLE_CLIENT_ID"] = inp_cid.strip()
+            os.environ["GOOGLE_CLIENT_SECRET"] = inp_csec.strip()
+            st.success("OAuth Client Credentials saved!")
+            st.rerun()
+        else:
+            st.warning("Please enter both Client ID and Client Secret.")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ---------------------------------------------------------
+    # Step 3: Google Sign-In & Gmail Authorization
+    # ---------------------------------------------------------
+    step3_ready = sys_status["gmail_ready"]
+    badge_cls3 = "step-badge-ready" if step3_ready else "step-badge-pending"
+    badge_icon3 = "✓" if step3_ready else "3"
+    connected_email = google_auth.get_user_email()
+
+    st.markdown(f"""
+    <div class="setup-step-box">
+        <div class="step-header">
+            <div class="step-badge {badge_cls3}">{badge_icon3}</div>
+            <div>
+                <div class="step-title-text">Step 3: Connect Gmail Account (gmail.readonly scope)</div>
+                <div class="step-desc-text">Authorizes TxnVerify AI to query your inbox for bank transfer notification emails.</div>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    if connected_email and not sys_status["sandbox_mode"]:
+        st.markdown(f"""
+        <div style="background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.35); border-radius: 12px; padding: 14px 18px; margin-bottom: 12px;">
+            <div style="color: #34d399; font-weight: 700; font-size: 0.95rem;">✅ Gmail Account Connected</div>
+            <div style="color: #f1f5f9; font-size: 0.9rem; margin-top: 3px;">Active Mailbox: <b>{connected_email}</b></div>
+            <div style="color: #94a3b8; font-size: 0.78rem; margin-top: 4px;">TxnVerify AI has active read-only authorization to poll incoming payment alerts.</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.button("Disconnect Gmail Account", type="secondary"):
+            google_auth.sign_out()
+            st.rerun()
+    else:
+        st.markdown("""
+        <p style="color: #94a3b8; font-size: 0.88rem; line-height: 1.6;">
+            Click the button below to initiate standard Google Web OAuth 2.0 flow. 
+            Once you grant read-only access, Google redirects you directly back to this dashboard.
+        </p>
+        """, unsafe_allow_html=True)
+
+        try:
+            auth_url, _ = google_auth.get_google_auth_url(redirect_uri="http://localhost:8501")
+            st.link_button("🌐 Sign in with Google", auth_url, type="primary")
+        except Exception as e:
+            st.info("💡 Complete Step 2 above to generate your Google Sign-In link, or toggle Sandbox Mode below.")
+
+        st.markdown("<hr style='border-color: rgba(255,255,255,0.08); margin: 1.2rem 0;'>", unsafe_allow_html=True)
+
+        # Sandbox / Mock Mode Option
+        st.markdown("<div class='metric-title'>Offline Demonstration Option</div>", unsafe_allow_html=True)
+        is_mock = database.get_config("sandbox_mode", False)
+        mock_choice = st.checkbox("🧪 Enable Offline Sandbox Inbox", value=is_mock,
+                                  help="Simulates bank confirmation emails for Chase, Venmo, Zelle, and UPI without live Gmail.")
+        if mock_choice != is_mock:
+            database.set_config("sandbox_mode", mock_choice)
+            if mock_choice:
+                database.set_config("sandbox_email", "demo-business@txnverify.ai")
+                st.toast("Sandbox Demo Inbox activated!", icon="✅")
+            st.rerun()
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 # =============================================================
-# TAB 2: WHATSAPP GATEWAY STATION
+# TAB 2: WHATSAPP GATEWAY
 # =============================================================
 with tab_whatsapp:
     col_qr, col_info = st.columns([1, 1], gap="large")
@@ -706,7 +747,7 @@ with tab_whatsapp:
         st.markdown("#### WhatsApp Device Connection")
         st.markdown(
             "<p style='color: var(--text-secondary); margin-top: -0.4rem; font-size: 0.88rem;'>"
-            "Pair your physical device to enable automated real-time background chat monitoring."
+            "Pair your physical WhatsApp phone to enable automated background chat monitoring."
             "</p>",
             unsafe_allow_html=True
         )
@@ -728,11 +769,14 @@ with tab_whatsapp:
             </div>
             """, unsafe_allow_html=True)
         elif gw_data and gw_data.get("status") == "READY":
-            st.markdown("""
+            paired = gw_data.get("paired_info") or {}
+            push_name = paired.get("pushname", "Connected Device")
+            st.markdown(f"""
             <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 3rem 2rem; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 20px; text-align: center;">
                 <div style="font-size: 3rem; margin-bottom: 0.5rem;">📱</div>
                 <div style="font-size: 1.25rem; font-weight: 800; color: #34d399;">WhatsApp Device Connected</div>
-                <div style="color: #94a3b8; font-size: 0.88rem; margin-top: 0.4rem; max-width: 360px;">
+                <div style="color: #f1f5f9; font-weight: 600; font-size: 1rem; margin-top: 0.3rem;">{push_name}</div>
+                <div style="color: #94a3b8; font-size: 0.85rem; margin-top: 0.4rem; max-width: 360px;">
                     Background listener is actively monitoring for incoming transaction screenshots 24/7.
                 </div>
             </div>
@@ -743,7 +787,7 @@ with tab_whatsapp:
                 <div style="font-size: 2.5rem; margin-bottom: 0.5rem;">⏳</div>
                 <div style="font-size: 1.1rem; font-weight: 700; color: #f8fafc;">Gateway Initializing</div>
                 <div style="color: #94a3b8; font-size: 0.85rem; margin-top: 0.3rem;">
-                    Starting Chromium headless browser on port 3001...
+                    Starting WhatsApp Web JS service on port 3001...
                 </div>
             </div>
             """, unsafe_allow_html=True)
@@ -765,11 +809,11 @@ with tab_whatsapp:
         <div class="glass-card">
             <div style="font-weight: 700; color: #60a5fa; margin-bottom: 0.4rem;">1. Open WhatsApp</div>
             <div style="color: #94a3b8; font-size: 0.87rem; line-height: 1.6;">
-                On your mobile device, navigate to <b>Settings ➔ Linked Devices ➔ Link a Device</b>.
+                On your mobile phone, open WhatsApp and navigate to <b>Settings ➔ Linked Devices ➔ Link a Device</b>.
             </div>
         </div>
         <div class="glass-card" style="margin-top: 0.75rem;">
-            <div style="font-weight: 700; color: #a78bfa; margin-bottom: 0.4rem;">2. Point Camera at QR Code</div>
+            <div style="font-weight: 700; color: #a78bfa; margin-bottom: 0.4rem;">2. Scan Live QR Code</div>
             <div style="color: #94a3b8; font-size: 0.87rem; line-height: 1.6;">
                 Scan the secure QR generated on the left. The gateway authenticates and saves the session securely in <code>.wwebjs_auth</code>.
             </div>
@@ -777,7 +821,7 @@ with tab_whatsapp:
         <div class="glass-card" style="margin-top: 0.75rem;">
             <div style="font-weight: 700; color: #34d399; margin-bottom: 0.4rem;">3. Autonomous 24/7 Verification</div>
             <div style="color: #94a3b8; font-size: 0.87rem; line-height: 1.6;">
-                Whenever a buyer or customer sends an image of a bank slip, <b>TxnVerify AI</b> immediately intercepts it, runs Gemma 4 OCR, verifies funds in Gmail, and replies in the chat.
+                Whenever a customer sends an image of a bank transfer slip, <b>TxnVerify AI</b> immediately intercepts it, runs Gemma 4 OCR, verifies funds in Gmail, and replies in the chat.
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -787,7 +831,10 @@ with tab_whatsapp:
 # TAB 3: REAL-TIME AUDIT TRAIL
 # =============================================================
 with tab_audit:
-    st.markdown("#### Transaction Verification Audit History")
+    c_hdr, c_btn = st.columns([4, 1])
+    c_hdr.markdown("#### Transaction Verification Audit History")
+    if c_btn.button("🔄 Refresh Records", use_container_width=True):
+        st.rerun()
 
     raw_txns = database.get_transactions(limit=100)
     if raw_txns:
@@ -799,7 +846,15 @@ with tab_audit:
             clean_df["ocr_confidence"] = clean_df["ocr_confidence"].apply(lambda c: f"{round(float(c or 0.95)*100)}%")
         st.dataframe(clean_df, use_container_width=True)
     else:
-        st.info("No transactions logged yet. Run a verification from the Sandbox tab!")
+        st.markdown("""
+        <div class="glass-card" style="text-align: center; padding: 2.5rem; color: #94a3b8;">
+            <div style="font-size: 2rem; margin-bottom: 0.5rem;">📜</div>
+            <div style="font-weight: 600; color: #f1f5f9;">No transactions recorded yet</div>
+            <div style="font-size: 0.85rem; margin-top: 0.3rem;">
+                Incoming transactions received via WhatsApp will automatically appear here with full verification timestamps.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
 
     st.markdown("<hr style='border-color: rgba(255,255,255,0.08); margin: 1.5rem 0;'>", unsafe_allow_html=True)
 
@@ -809,47 +864,3 @@ with tab_audit:
         df_l = pd.DataFrame(logs)
         disp_cols = ["id", "timestamp", "sender", "event_type", "status", "details"]
         st.dataframe(df_l[[c for c in disp_cols if c in df_l.columns]], use_container_width=True)
-
-
-# =============================================================
-# TAB 4: INTEGRATION & SETUP GUIDE
-# =============================================================
-with tab_setup:
-    st.markdown("#### System Architecture & Setup Guide")
-    st.markdown("""
-    ```
-    ┌──────────────────────────┐          ┌──────────────────────────┐
-    │  Customer Mobile Phone   │          │ Streamlit Control Panel  │
-    │  Sends receipt on WA     │          │ Port 8501 (UI & Sandbox) │
-    └────────────┬─────────────┘          └────────────┬─────────────┘
-                 │                                     │
-                 ▼                                     │
-    ┌──────────────────────────────────────┐           │
-    │  WhatsApp Gateway Service (Node.js)  │◄──────────┘
-    │  Port 3001 (whatsapp-web.js)         │
-    └──────────────────┬───────────────────┘
-                       │ HTTP POST (Base64 Receipt)
-                       ▼
-    ┌────────────────────────────────────────────────────────────┐
-    │  TxnVerify AI Engine (FastAPI Server on Port 8000)         │
-    │                                                            │
-    │  1. Gemma 4 Multimodal Visual OCR (gemma-4-26b-a4b-it)     │
-    │     -> Parses Transaction ID, Amount, Payment App          │
-    │                                                            │
-    │  2. 60-Second Real-Time Gmail Inbox Polling Loop           │
-    │     -> users.messages.list(userId='me', q=transaction_id)  │
-    │                                                            │
-    │  3. SQLite Audit Logger & Auto WhatsApp Reply Dispatch     │
-    └────────────────────────────────────────────────────────────┘
-    ```
-    """)
-    st.markdown("##### Direct API Endpoints")
-    st.code("""
-# WhatsApp Media Webhook:
-POST http://127.0.0.1:8000/webhook/whatsapp
-Payload: { "from": "+1555123456", "data": "<base64>", "mimetype": "image/jpeg" }
-
-# Send WhatsApp Text Message:
-POST http://127.0.0.1:3001/send-message
-Payload: { "to": "+1555123456", "message": "✅ Payment Confirmed!" }
-    """, language="http")
